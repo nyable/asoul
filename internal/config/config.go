@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/nyable/asoul/internal/output"
 	"gopkg.in/yaml.v3"
 )
 
@@ -68,9 +69,28 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
-	// 如果配置文件不存在，返回默认配置
+	// 如果配置文件不存在，返回默认配置并保存
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		return DefaultConfig()
+		cfg, err := DefaultConfig()
+		if err != nil {
+			return nil, err
+		}
+		
+		// 自动生成并保存配置
+		if saveErr := cfg.Save(); saveErr == nil {
+			// 创建对应的 SKILLS 目录
+			if cfg.SkillsPath != "" {
+				os.MkdirAll(cfg.SkillsPath, 0755)
+			}
+			
+			if output.Default.IsText() {
+				output.PrintInfo("未找到配置文件，已自动生成默认配置于: %s", configPath)
+				output.PrintInfo("已自动创建默认 SKILLS 目录: %s", cfg.SkillsPath)
+				output.PrintInfo("可以通过命令修改 SKILLS 目录: asoul config set skills_path <path>")
+			}
+		}
+		
+		return cfg, nil
 	}
 
 	data, err := os.ReadFile(configPath)
@@ -81,6 +101,17 @@ func Load() (*Config, error) {
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, err
+	}
+
+	// 确保配置中指定的 SKILLS 目录存在
+	if cfg.SkillsPath != "" {
+		if _, err := os.Stat(cfg.SkillsPath); os.IsNotExist(err) {
+			if err := os.MkdirAll(cfg.SkillsPath, 0755); err == nil {
+				if output.Default.IsText() {
+					output.PrintInfo("已自动创建缺失的 SKILLS 目录: %s", cfg.SkillsPath)
+				}
+			}
+		}
 	}
 
 	return &cfg, nil
