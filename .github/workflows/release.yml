@@ -1,0 +1,101 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+          cache: true
+
+      - name: Display Go version
+        run: go version
+
+      - name: Download Go modules
+        run: go mod download
+
+      - name: Build cross-platform binaries
+        run: |
+          mkdir -p dist
+          VERSION="${{ github.ref_name }}"
+          if [ -z "$VERSION" ] || [[ "$VERSION" == *"/"* ]]; then
+            VERSION="dev"
+          fi
+          LDFLAGS="-s -w -X asoul/internal/cli.Version=${VERSION}"
+
+          PLATFORMS=(
+            "linux/amd64/asoul-linux-amd64"
+            "linux/arm64/asoul-linux-arm64"
+            "darwin/amd64/asoul-darwin-amd64"
+            "darwin/arm64/asoul-darwin-arm64"
+            "windows/amd64/asoul-windows-amd64.exe"
+            "windows/arm64/asoul-windows-arm64.exe"
+          )
+
+          for PLATFORM in "${PLATFORMS[@]}"; do
+            IFS="/" read -r OS ARCH OUTPUT <<< "$PLATFORM"
+            echo "==> Building for ${OS}/${ARCH} -> dist/${OUTPUT}..."
+            GOOS=$OS GOARCH=$ARCH CGO_ENABLED=0 go build -ldflags "$LDFLAGS" -o "dist/${OUTPUT}" ./cmd/asoul
+          done
+
+          cd dist
+          tar -czf asoul-linux-amd64.tar.gz asoul-linux-amd64
+          tar -czf asoul-linux-arm64.tar.gz asoul-linux-arm64
+          tar -czf asoul-darwin-amd64.tar.gz asoul-darwin-amd64
+          tar -czf asoul-darwin-arm64.tar.gz asoul-darwin-arm64
+          zip asoul-windows-amd64.zip asoul-windows-amd64.exe
+          zip asoul-windows-arm64.zip asoul-windows-arm64.exe
+          cd ..
+        shell: bash
+
+      - name: Calculate Artifact Hashes
+        id: calculate_hashes
+        run: |
+          cd dist
+          sha256sum asoul-* > checksums.txt
+          cat checksums.txt
+          echo "hashes<<EOF" >> $GITHUB_OUTPUT
+          cat checksums.txt >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+        shell: bash
+
+      - name: Prepare Release Notes
+        id: prepare_notes
+        run: |
+          cat << 'EOF' > release_notes.md
+          ## Release Assets & Checksums
+
+          ### SHA-256 Hashes
+          ```text
+          EOF
+          cat dist/checksums.txt >> release_notes.md
+          cat << 'EOF' >> release_notes.md
+          ```
+          EOF
+        shell: bash
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          body_path: release_notes.md
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt
