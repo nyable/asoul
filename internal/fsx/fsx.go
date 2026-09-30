@@ -38,7 +38,7 @@ func AtomicWriteFilePreservePerm(filename string, data []byte) error {
 }
 
 // AtomicWriteFile writes data to a temporary file in the same directory and renames it atomically.
-func AtomicWriteFile(filename string, data []byte, perm os.FileMode) error {
+func AtomicWriteFile(filename string, data []byte, perm os.FileMode, permissionSource ...string) error {
 	dir := filepath.Dir(filename)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create parent directories: %w", err)
@@ -50,6 +50,14 @@ func AtomicWriteFile(filename string, data []byte, perm os.FileMode) error {
 	}
 	tmpName := tmpFile.Name()
 	defer os.Remove(tmpName) // clean up on error
+	source := filename
+	if len(permissionSource) > 0 {
+		source = permissionSource[0]
+	}
+	if err := preserveFileAccess(tmpName, source); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("failed to preserve file access: %w", err)
+	}
 
 	if _, err := tmpFile.Write(data); err != nil {
 		tmpFile.Close()

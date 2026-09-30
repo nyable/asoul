@@ -2568,7 +2568,9 @@ func buildUpstreamDetailBody(u model.UpstreamInfo, contentWidth int) string {
 	// 3. Skills overview
 	b.WriteString(sectionStyle.Render(i18n.T("modal.upstream_detail.sec_skills")) + "\n")
 	var introText string
-	if u.CacheExists {
+	if u.ScanError != "" {
+		introText = i18n.T("error.upstream_scan", u.URL, u.ScanError)
+	} else if u.Scanned || u.CacheExists {
 		introText = fmt.Sprintf(i18n.T("modal.upstream_detail.skills_summary_intro"), len(u.AvailableSkills), len(u.Skills))
 	} else {
 		introText = fmt.Sprintf(i18n.T("modal.upstream_detail.skills_uncached_intro"), len(u.Skills))
@@ -2578,7 +2580,7 @@ func buildUpstreamDetailBody(u model.UpstreamInfo, contentWidth int) string {
 
 	if len(u.AvailableSkills) > 0 {
 		b.WriteString(renderDetailSkillList(i18n.T("modal.upstream_detail.avail_skills"), len(u.AvailableSkills), u.AvailableSkills, 0, valueStyle, labelStyle, contentWidth))
-	} else if u.CacheExists {
+	} else if u.Scanned || (u.CacheExists && u.ScanError == "") {
 		b.WriteString(fmt.Sprintf("  • %s: %s\n",
 			labelStyle.Render(i18n.T("modal.upstream_detail.avail_skills")),
 			lipgloss.NewStyle().Faint(true).Render(i18n.T("modal.upstream_detail.none")),

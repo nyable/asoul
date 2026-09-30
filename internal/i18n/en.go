@@ -38,7 +38,8 @@ var enDict = map[string]string{
 	"table.header.upstream_skills":     "SKILLS (TOTAL/REF)",
 	"table.header.upstream_ref":        "REF",
 	"upstream.skills_summary.cached":   "%d total (%d ref)",
-	"upstream.skills_summary.uncached": "uncached (%d ref)",
+	"upstream.skills_summary.uncached": "not scanned (%d ref)",
+	"upstream.skills_summary.failed":   "scan failed (%d ref)",
 	"upstream.status.up_to_date":       "Up to date",
 	"upstream.status.update_available": "Update available",
 	"upstream.status.source_changed":   "Source changed",
@@ -105,21 +106,32 @@ var enDict = map[string]string{
 	"system.subtab.cache":  "Cache (%d)",
 	"system.subtab.doctor": "Diagnostics",
 
-	"footer.dashboard":       "[u] update all pending • [r] check all upstreams • [?] help • [q] quit",
-	"footer.upstreams":       "[i] details • [s] discover & add skills • [a] add upstream • [e] edit • [r] refresh cache • [c] check upstream updates • [u] update skills • [x/d] remove • [/] search • [?] help • [q] quit",
-	"footer.skills":          "[Space] select • [a] add • [n] new • [i] view • [v] diff • [u] update • [d] deploy • [r] refresh • [x] rm • [X] filter rm • [/] search • [?] help • [q] quit",
-	"footer.channels":        "[t] toggle • [d] deploy • [D] undeploy • [a] add • [x] remove • [i] row details • [I] channel details • [f] filter • [r] refresh",
-	"footer.channels.models": "model config (OpenCode): [e] enrich & preview • [R] rules only • [o] sync mode • [c] config file",
-	"footer.help_entry":      "[?] help",
-	"footer.quit_entry":      "[q] quit",
-	"footer.projects":        "[Space/t] toggle • [f] filter • [/] search • [i] details • [d] deploy • [D] undeploy • [a] add • [x] remove • [r] refresh • [?] help • [q] quit",
-	"footer.groups":          "[/] search • [a] new group • [e] assign skills • [d] deploy • [r] refresh • [x] delete • [?] help • [q] quit",
-	"footer.cache":           "[/] search • [p] prune unused • [c] clean all • [r] refresh • [?] help • [q] quit",
-	"footer.doctor":          "[r] re-run diagnostics • [c] clean leftovers • [?] help • [q] quit",
-	"footer.settings":        "[Space]: toggle • [e]: edit value • [I]: init workspace • [/] search • [r]: reload • [?] help • [q]: quit",
-	"footer.models_confirm":  "[Enter/y] Confirm & Backup • [Esc/q/n] Cancel • [t] Changes Only",
-	"footer.detail":          "[u] Update • [d] Deploy • [esc/q] Back",
-	"footer.diff":            "[t] Changes Only • [u] Update • [esc/q] Back",
+	"footer.dashboard":               "[u] update all pending • [r] check all upstreams • [?] help • [q] quit",
+	"footer.upstreams":               "[i] details • [s] scan & add skills • [a] add & scan upstream • [e] edit • [r] reload local cache • [c] fetch & check upstreams • [u] update skills • [x/Del] remove • [/] search • [?] help • [q] quit",
+	"footer.skills":                  "[Space] select • [a] add • [n] new • [i] view • [v] diff • [u] update • [d] deploy • [r] refresh • [x] rm • [X] filter rm • [/] search • [?] help • [q] quit",
+	"footer.channels":                "[t] toggle • [d] deploy • [D] undeploy • [a] add • [x] remove • [i] row details • [I] channel details • [f] filter • [r] refresh",
+	"footer.channels.models":         "model config (OpenCode): [e] enrich & preview • [R] rules only • [o] sync mode • [c] config file",
+	"footer.help_entry":              "[?] help",
+	"footer.quit_entry":              "[q] quit",
+	"footer.projects":                "[Space/t] toggle • [f] filter • [/] search • [i] details • [d] deploy • [D] undeploy • [a] add • [x] remove • [r] refresh • [?] help • [q] quit",
+	"footer.groups":                  "[/] search • [a] new group • [e] assign skills • [d] deploy • [r] refresh • [x] delete • [?] help • [q] quit",
+	"footer.cache":                   "[/] search • [p] prune unused • [c] clean all • [r] refresh • [?] help • [q] quit",
+	"footer.doctor":                  "[r] re-run diagnostics • [c] clean leftovers • [?] help • [q] quit",
+	"footer.settings":                "[Space]: toggle • [e]: edit value • [I]: init workspace • [/] search • [r]: reload • [?] help • [q]: quit",
+	"footer.models_confirm":          "[Enter/y] Confirm & Backup • [e] Edit draft • [Esc/q/n] Cancel • [t] Changes Only • [/] Search • [n/N] Matches • []c/[c] Hunks",
+	"footer.detail":                  "[u] Update • [d] Deploy • [esc/q] Back",
+	"footer.diff":                    "[t] Changes Only • [/] Search • [n/N] Matches • []c/[c] Hunks • [h/l] Scroll sideways • [u] Update • [esc/q] Back",
+	"notice.upstream_scan_empty":     "Source %s was scanned; no skills found. Press s to retry.",
+	"notice.upstream_scan_complete":  "Found %d skills. Choose what to import; closing this window keeps the source registered.",
+	"notice.upstream_scan_cancelled": "Scan cancelled; the registered source is retained. Press s to retry.",
+	"error.upstream_scan":            "Could not fully scan %s: %s. The source is retained; press s to retry.",
+	"notice.editor_preparing":        "Preparing a private editor draft…",
+	"notice.editor_running":          "Editing a temporary draft; save and close the editor to return.",
+	"error.editor_unavailable":       "No external editor found. Configure editor.command / editor.args or VISUAL / EDITOR; you can still edit here.",
+	"error.editor_failed":            "Editor or draft operation failed: %s. Your draft is kept in this window; the original file was not changed.",
+	"error.editor_invalid_json":      "Invalid JSON/JSONC: %s. The draft is kept; fix it here or press Ctrl+E to reopen the editor.",
+	"notice.diff_search_empty":       "No diff matches for %s.",
+	"footer.target_diff":             "[t] Changes Only • [/] Search • [n/N] Matches • []c/[c] Hunks • [h/l] Scroll sideways • [Esc/q] Back to conflict",
 
 	// Dashboard
 	"dashboard.workspace_label":          "🏠 Workspace: ",
@@ -571,8 +583,9 @@ var enDict = map[string]string{
 	"modal.edit_field.json_value":     "(JSON object)",
 
 	// Raw JSON edit modal
-	"modal.edit_json.title": "Edit Raw JSON - %s",
-	"modal.edit_json.hint":  "[Ctrl+S] Validate & preview diff • [Esc] Back",
+	"modal.edit_json.title":       "Edit Raw JSON - %s",
+	"modal.edit_json.hint":        "[Ctrl+E] External editor • [Ctrl+S] Validate & preview diff • [Esc] Back (keep draft)",
+	"modal.edit_json.large_draft": "Large draft: inline display is truncated and read-only. Ctrl+E edits the complete draft; Ctrl+S previews the complete content.",
 
 	"settings.item.workspace":             "Skill Workspaces",
 	"settings.desc.workspace":             "Register, manage, and switch between skill workspace directories",
@@ -628,7 +641,7 @@ var enDict = map[string]string{
   Tab         Cycle focus levels within the page (primary → sub-tabs → primary); no-op without sub-tabs
   S-Tab       Cycle focus levels in reverse (equals Tab with two levels); Esc returns to the top level
   [ / ]       Cycle top-level tabs when focused at the top level only
-  m / s       Jump directly to [4. Channels] / [7. Settings] tab
+  m / s       Jump to Channels / Settings (s scans skills on Sources)
   ↑ / k       Move selection up
   ↓ / j       Move selection down
   /           Search / filter list
@@ -646,13 +659,15 @@ Enter is reserved for modals (confirm / submit); it has no default action in the
   ↑ / ↓       Move through the source list
   i           Inspect upstream source details (URL, ref, cache, managed skills)
   s           Discover & add skills from this upstream
-  a           Add new upstream repository
+  a           Register upstream, then automatically scan and choose skills (no automatic import)
   e           Edit upstream configuration
   r           Refresh sources from local cache
-  c           Check upstream updates
+  c           Fetch upstreams and refresh available skills, including sources without imports
   u           Update all managed skills from this upstream
   x / del     Remove upstream source
-  /           Search / filter`,
+  /           Search / filter
+  Unscanned, failed and empty scans are distinct; s retries and r never fetches.
+  d / D       No deployment actions on Sources`,
 	"help.page.skills": `Skills Actions:
   ↑ / ↓       Move cursor
   Space       Toggle checkbox for multi-selection
@@ -694,7 +709,11 @@ Enter is reserved for modals (confirm / submit); it has no default action in the
     e           Enrich model config from models.dev and preview the diff
     R           Regenerate configuration from rules only
     o           Toggle sync mode (upstream / fill gaps)
-    c           View the model config file`,
+    c           View the model config file
+  Diff: / search; n/N next/previous match (n cancels without a search); ]c/[c jump hunks.
+  Diff: gg/G top/bottom; h/l horizontal scrolling; e edit the candidate draft.
+  JSON editor: Ctrl+E external editor; Ctrl+S validate and preview; Esc back.
+  Save and close the external editor to return, then confirm the diff to write.`,
 	"help.page.projects": `Projects Actions:
   ↑ / ↓       Move cursor
   i           View project details
@@ -784,7 +803,7 @@ Enter is reserved for modals (confirm / submit); it has no default action in the
 	"modal.upstream.add.url_label":              "Upstream repository URL or local directory (Git URL / Local Path):",
 	"modal.upstream.add.ref_label":              "Track branch/Tag/Commit (optional, empty = default branch):",
 	"modal.upstream.add.name_label":             "Upstream alias/display name (optional):",
-	"modal.upstream.add.hint":                   "[Tab/↓↑] switch field • [Enter] save and discover skills • [Esc] cancel",
+	"modal.upstream.add.hint":                   "[Tab/Shift+Tab] switch fields • [Enter] register & scan (no auto-import) • [Esc] cancel",
 	"modal.upstream.edit.title":                 "✏️ Edit Upstream",
 	"modal.upstream.edit.url_label":             "Upstream URL: ",
 	"modal.upstream.edit.ref_label":             "Track branch/Tag/Commit:",

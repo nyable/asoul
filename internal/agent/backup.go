@@ -45,7 +45,7 @@ func CreateConfigFileBackup(targetFile string, rawBytes []byte, maxVersions *int
 	if info, err := os.Stat(targetFile); err == nil {
 		perm = info.Mode().Perm()
 	}
-	if err := os.WriteFile(backupPath, rawBytes, perm); err != nil {
+	if err := fsx.AtomicWriteFile(backupPath, rawBytes, perm, targetFile); err != nil {
 		return "", fmt.Errorf("failed to write backup file %s: %w", backupPath, err)
 	}
 

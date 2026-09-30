@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -85,6 +86,20 @@ func (s *Source) DiscoverSkillsWithFetch(ctx context.Context, url, ref string, f
 		}
 	}
 
+	return s.discoverAtCommit(ctx, repoDir, commit, onProgress...)
+}
+
+// DiscoverSkillsCached never clones or fetches, even when the ref cannot be resolved.
+func (s *Source) DiscoverSkillsCached(ctx context.Context, url, ref string) ([]DiscoveredSkill, error) {
+	repoDir := s.cacheManager.RepoDir(url)
+	commit, err := s.client.ResolveRef(ctx, repoDir, ref)
+	if err != nil {
+		return nil, err
+	}
+	return s.discoverAtCommit(ctx, repoDir, commit)
+}
+
+func (s *Source) discoverAtCommit(ctx context.Context, repoDir, commit string, onProgress ...progress.Func) ([]DiscoveredSkill, error) {
 	files, err := s.client.ListTree(ctx, repoDir, commit, "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to list repository tree: %w", err)
@@ -99,30 +114,39 @@ func (s *Source) DiscoverSkillsWithFetch(ctx context.Context, url, ref string, f
 	}
 
 	if len(skillMDPaths) == 0 {
-		return nil, fmt.Errorf("no SKILL.md found in repository %s at ref %s", url, ref)
+		return []DiscoveredSkill{}, nil
 	}
 
-	var results []DiscoveredSkill
-	for _, mdPath := range skillMDPaths {
+	results := []DiscoveredSkill{}
+	var failures []error
+	for i, mdPath := range skillMDPaths {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		progress.Send(progress.First(onProgress...), progress.Update{Phase: progress.PhaseScan, Current: i + 1, Total: len(skillMDPaths), Text: mdPath})
 		subDir := filepath.Dir(mdPath)
 		data, err := s.client.ShowFile(ctx, repoDir, commit, mdPath)
 		if err != nil {
+			failures = append(failures, fmt.Errorf("%s: %w", mdPath, err))
 			continue
 		}
 		meta, _, parseErr := skill.ParseSkillContent(data)
-		if parseErr == nil && meta.Name != "" {
-			// If subDir is not root, directory name should match
-			if subDir == "." || filepath.Base(subDir) == meta.Name {
-				results = append(results, DiscoveredSkill{
-					ID:          meta.Name,
-					Path:        subDir,
-					Description: meta.Description,
-				})
-			}
+		if parseErr != nil {
+			failures = append(failures, fmt.Errorf("%s: %w", mdPath, parseErr))
+			continue
 		}
+		if err := skill.ValidateID(meta.Name); err != nil {
+			failures = append(failures, fmt.Errorf("%s: %w", mdPath, err))
+			continue
+		}
+		if strings.TrimSpace(meta.Description) == "" || (subDir != "." && filepath.Base(subDir) != meta.Name) {
+			failures = append(failures, fmt.Errorf("%s: missing description or name does not match directory", mdPath))
+			continue
+		}
+		results = append(results, DiscoveredSkill{ID: meta.Name, Path: subDir, Description: meta.Description})
 	}
 
-	return results, nil
+	return results, errors.Join(failures...)
 }
 
 // ResolveCommit resolves a git reference to a full commit hash in the cached repo.

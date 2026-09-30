@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1356,14 +1357,17 @@ func (s *Service) buildUpstreamList(ctx context.Context, statuses []model.SkillS
 						info.Commit = commit
 					}
 				}
-				if disc, err := s.gitSource.DiscoverSkills(ctx, info.URL, info.Ref); err == nil {
-					var avail []string
-					for _, d := range disc {
-						avail = append(avail, d.ID)
-					}
-					sort.Strings(avail)
-					info.AvailableSkills = avail
+				disc, scanErr := s.gitSource.DiscoverSkillsCached(ctx, info.URL, info.Ref)
+				info.Scanned = true
+				if scanErr != nil {
+					info.ScanError = scanErr.Error()
 				}
+				avail := []string{}
+				for _, d := range disc {
+					avail = append(avail, d.ID)
+				}
+				sort.Strings(avail)
+				info.AvailableSkills = avail
 				if info.UpdatedAt == "" {
 					if meta := s.cacheMgr.GetRepoMeta(info.URL); meta != nil && !meta.LastUsedAt.IsZero() {
 						info.UpdatedAt = meta.LastUsedAt.Local().Format("2006-01-02 15:04:05")
@@ -1375,14 +1379,17 @@ func (s *Service) buildUpstreamList(ctx context.Context, statuses []model.SkillS
 			if err == nil && fsx.DirExists(expanded) {
 				info.CachePath = expanded
 				info.CacheExists = true
-				if disc, err := s.UpstreamDiscover(ctx, info.URL, info.Ref); err == nil {
-					var avail []string
-					for _, d := range disc {
-						avail = append(avail, d.ID)
-					}
-					sort.Strings(avail)
-					info.AvailableSkills = avail
+				disc, scanErr := s.UpstreamDiscover(ctx, info.URL, info.Ref)
+				info.Scanned = true
+				if scanErr != nil {
+					info.ScanError = scanErr.Error()
 				}
+				avail := []string{}
+				for _, d := range disc {
+					avail = append(avail, d.ID)
+				}
+				sort.Strings(avail)
+				info.AvailableSkills = avail
 			}
 		}
 
@@ -1531,42 +1538,88 @@ func (s *Service) UpstreamCheck(ctx context.Context, targetURL string, onProgres
 				skillIDs = append(skillIDs, id)
 			}
 		}
-		if len(skillIDs) == 0 {
-			if strings.HasPrefix(targetURL, "http://") || strings.HasPrefix(targetURL, "https://") ||
-				strings.HasPrefix(targetURL, "git@") || strings.HasPrefix(targetURL, "ssh://") ||
-				strings.HasSuffix(targetURL, ".git") {
-				_, _ = s.gitSource.EnsureRepo(ctx, targetURL, true, onProgress...)
-			}
-		}
 	}
 
-	statuses, err := s.Check(ctx, skillIDs, onProgress...)
+	statuses, err := s.Status(ctx, false)
+	if targetURL == "" || len(skillIDs) > 0 {
+		statuses, err = s.Check(ctx, skillIDs, onProgress...)
+	}
 	if err != nil {
 		return nil, err
 	}
+	// Check already fetched repositories with managed skills. Refresh configured
+	// sources without imports too, once per URL, and retain network failures.
+	fetched := make(map[string]bool)
+	for _, rec := range cat.Skills {
+		if rec.Source.Type == model.SourceTypeGit && (targetURL == "" || rec.Source.URL == targetURL) {
+			fetched[rec.Source.URL] = true
+		}
+	}
+	failures := make(map[string]error)
+	if s.configMgr != nil {
+		configured, loadErr := s.configMgr.ListUpstreams()
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		for _, u := range configured {
+			if u.Type != model.SourceTypeGit || fetched[u.URL] || (targetURL != "" && u.URL != targetURL) {
+				continue
+			}
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			_, failures[u.URL] = s.gitSource.EnsureRepo(ctx, u.URL, true, onProgress...)
+			fetched[u.URL] = true
+		}
+	}
+	if targetURL != "" && !fetched[targetURL] && isGitURL(targetURL) {
+		_, failures[targetURL] = s.gitSource.EnsureRepo(ctx, targetURL, true, onProgress...)
+	}
+	upstreams, err := s.buildUpstreamList(ctx, statuses)
+	if err != nil {
+		return nil, err
+	}
+	for i := range upstreams {
+		if fetchErr := failures[upstreams[i].URL]; fetchErr != nil {
+			upstreams[i].Status = model.UpstreamUnreachable
+			upstreams[i].Error = fetchErr.Error()
+		}
+	}
+	return upstreams, nil
+}
 
-	return s.buildUpstreamList(ctx, statuses)
+func isGitURL(url string) bool {
+	return strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") ||
+		strings.HasPrefix(url, "git@") || strings.HasPrefix(url, "ssh://") ||
+		strings.HasPrefix(url, "file://") || strings.HasSuffix(url, ".git")
 }
 
 // UpstreamDiscover discovers all skills available in the upstream repository or directory.
 func (s *Service) UpstreamDiscover(ctx context.Context, targetURL, ref string, onProgress ...progress.Func) ([]git.DiscoveredSkill, error) {
-	isGit := strings.HasPrefix(targetURL, "http://") ||
-		strings.HasPrefix(targetURL, "https://") ||
-		strings.HasPrefix(targetURL, "git@") ||
-		strings.HasPrefix(targetURL, "ssh://") ||
-		strings.HasSuffix(targetURL, ".git")
+	isGit := isGitURL(targetURL)
 
 	if !isGit {
 		expanded, err := fsx.ExpandUser(targetURL)
 		if err == nil && fsx.DirExists(expanded) {
-			var discovered []git.DiscoveredSkill
+			discovered := []git.DiscoveredSkill{}
+			var failures []error
 			err := filepath.Walk(expanded, func(path string, info os.FileInfo, walkErr error) error {
-				if walkErr != nil || info == nil || info.IsDir() {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				if walkErr != nil {
+					failures = append(failures, fmt.Errorf("%s: %w", path, walkErr))
+					return nil
+				}
+				if info == nil || info.IsDir() {
 					return nil
 				}
 				if filepath.Base(path) == "SKILL.md" {
 					subDir := filepath.Dir(path)
 					meta, err := skill.ValidateSkillDir(subDir, "")
+					if err != nil {
+						failures = append(failures, fmt.Errorf("%s: %w", path, err))
+					}
 					if err == nil && meta.Name != "" {
 						rel, relErr := filepath.Rel(expanded, subDir)
 						if relErr != nil {
@@ -1584,7 +1637,7 @@ func (s *Service) UpstreamDiscover(ctx context.Context, targetURL, ref string, o
 			if err != nil {
 				return nil, err
 			}
-			return discovered, nil
+			return discovered, errors.Join(failures...)
 		}
 	}
 
@@ -2866,24 +2919,31 @@ func (s *Service) ListAgentProviders(ctx context.Context, agentName string) ([]A
 
 // AgentConfigEdit is the result of previewing or applying a single config change.
 type AgentConfigEdit struct {
-	ConfigFile string
-	BackupFile string
-	Modified   bool
-	DiffText   string
+	ConfigFile   string
+	BackupFile   string
+	Modified     bool
+	DiffText     string
+	OriginalHash string
 }
 
 // PreviewAgentConfigValue computes the diff of setting (or removing) a config
 // field without writing to disk.
-func (s *Service) PreviewAgentConfigValue(ctx context.Context, agentName, cfgFile string, fieldPath []string, value any, remove bool) (*AgentConfigEdit, error) {
-	return s.editAgentConfigValue(agentName, cfgFile, fieldPath, value, remove, true)
+func (s *Service) PreviewAgentConfigValue(ctx context.Context, agentName, cfgFile string, fieldPath []string, value any, remove bool, expectedHash ...string) (*AgentConfigEdit, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return s.editAgentConfigValue(agentName, cfgFile, fieldPath, value, remove, true, expectedHash...)
 }
 
 // ApplyAgentConfigValue writes the changed field after creating a backup.
-func (s *Service) ApplyAgentConfigValue(ctx context.Context, agentName, cfgFile string, fieldPath []string, value any, remove bool) (*AgentConfigEdit, error) {
-	return s.editAgentConfigValue(agentName, cfgFile, fieldPath, value, remove, false)
+func (s *Service) ApplyAgentConfigValue(ctx context.Context, agentName, cfgFile string, fieldPath []string, value any, remove bool, expectedHash ...string) (*AgentConfigEdit, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return s.editAgentConfigValue(agentName, cfgFile, fieldPath, value, remove, false, expectedHash...)
 }
 
-func (s *Service) editAgentConfigValue(agentName, cfgFile string, fieldPath []string, value any, remove, dryRun bool) (*AgentConfigEdit, error) {
+func (s *Service) editAgentConfigValue(agentName, cfgFile string, fieldPath []string, value any, remove, dryRun bool, expectedHash ...string) (*AgentConfigEdit, error) {
 	if len(fieldPath) == 0 {
 		return nil, fmt.Errorf("empty config field path")
 	}
@@ -2893,6 +2953,10 @@ func (s *Service) editAgentConfigValue(agentName, cfgFile string, fieldPath []st
 		return nil, err
 	}
 
+	path, err = filepath.EvalSymlinks(path)
+	if err != nil {
+		return nil, err
+	}
 	fileLock := flock.New(path + ".lock")
 	ok, err := fileLock.TryLock()
 	if err != nil {
@@ -2908,6 +2972,10 @@ func (s *Service) editAgentConfigValue(agentName, cfgFile string, fieldPath []st
 		return nil, err
 	}
 	raw := doc.Raw()
+	originalHash := fmt.Sprintf("%x", sha256.Sum256(raw))
+	if len(expectedHash) > 0 && expectedHash[0] != "" && expectedHash[0] != originalHash {
+		return nil, fmt.Errorf("configuration changed since preview; review a new diff before saving")
+	}
 
 	root, err := doc.RootMap()
 	if err != nil {
@@ -2924,12 +2992,15 @@ func (s *Service) editAgentConfigValue(agentName, cfgFile string, fieldPath []st
 
 	updated := doc.Bytes()
 	modified := string(raw) != string(updated)
-	edit := &AgentConfigEdit{ConfigFile: path, Modified: modified}
+	edit := &AgentConfigEdit{ConfigFile: path, Modified: modified, OriginalHash: originalHash}
 	if !modified {
 		return edit, nil
 	}
 	if len(updated) > 0 && updated[len(updated)-1] != '\n' {
 		updated = append(updated, '\n')
+	}
+	if strings.Contains(string(raw), "\r\n") {
+		updated = []byte(strings.ReplaceAll(strings.ReplaceAll(string(updated), "\r\n", "\n"), "\n", "\r\n"))
 	}
 	edit.DiffText = agent.UnifiedDiff(string(raw), string(updated))
 

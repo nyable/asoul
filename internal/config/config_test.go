@@ -8,7 +8,32 @@ import (
 
 	"asoul/internal/config"
 	"asoul/internal/fsx"
+	"asoul/internal/model"
 )
+
+func TestEditorConfigSurvivesLockedMutations(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.jsonc")
+	mgr, err := config.NewManager(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Update(func(cfg *model.Config) error {
+		cfg.Editor = &model.EditorConfig{Command: `C:\Program Files\Neovim\bin\nvim.exe`, Args: []string{"--clean"}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.AddUpstream(model.UpstreamConfig{URL: "file://fixture", Type: model.SourceTypeGit}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := mgr.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Editor == nil || cfg.Editor.Command != `C:\Program Files\Neovim\bin\nvim.exe` || len(cfg.Editor.Args) != 1 || cfg.Editor.Args[0] != "--clean" {
+		t.Fatalf("editor config lost: %+v", cfg.Editor)
+	}
+}
 
 func TestWorkspaceDeduplicationAndNormalization(t *testing.T) {
 	tmpDir := t.TempDir()

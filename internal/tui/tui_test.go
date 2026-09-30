@@ -277,7 +277,7 @@ func TestTUIDeployMultiSelectFlow(t *testing.T) {
 	_ = svc.NewSkill(ctx, "deploy-skill-3")
 	_ = svc.TargetAdd("test-target", "/tmp/deploy-target-test")
 
-	m := tui.NewModel(ctx, svc)
+	m := newTestSkillsModel(ctx, svc)
 
 	// 1. Press "d" to open Deploy Modal (defaults directly to manual multi-select)
 	m1, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})

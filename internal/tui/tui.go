@@ -184,11 +184,13 @@ type modelsEnrichDryRunMsg struct {
 // pendingConfigEdit describes a single agent-config field change awaiting
 // confirmation in the diff view.
 type pendingConfigEdit struct {
-	channel   string
-	cfgFile   string
-	fieldPath []string
-	value     any
-	remove    bool
+	channel      string
+	cfgFile      string
+	fieldPath    []string
+	value        any
+	remove       bool
+	originalHash string
+	candidate    []byte
 }
 
 type configEditPreviewMsg struct {
@@ -231,6 +233,8 @@ type Model struct {
 	upstreams            []model.UpstreamInfo
 	upstreamCursor       int
 	upstreamScrollOffset int
+	upstreamOperation    uint64
+	upstreamScanActive   bool
 
 	// Channel / project deployment targets
 	targetFilter        targetFilterMode
@@ -281,6 +285,7 @@ type Model struct {
 	editFieldModal       FieldEditModalState
 	editJSONModal        JSONEditModalState
 	pendingConfigEdit    *pendingConfigEdit
+	editorOperation      uint64
 
 	// Sub-states
 	addModal                   AddModalState
@@ -315,6 +320,11 @@ type Model struct {
 	diffContent       string
 	diffSummary       diffview.Summary
 	diffChangesOnly   bool
+	diffRendered      string
+	diffSearch        textinput.Model
+	diffSearching     bool
+	diffPrefix        string
+	diffLastJump      int
 	detailSkill       *model.SkillStatus
 	detailMeta        *model.SkillMetadata
 	detailPath        string
@@ -522,6 +532,7 @@ func (m *Model) renderDiffView() {
 		Width:          m.diffViewport.Width,
 	})
 	m.diffViewport.SetContent(rendered)
+	m.diffRendered = rendered
 }
 
 // toggleChangesOnly flips between the full diff and a changes-only view.
@@ -534,6 +545,7 @@ func (m *Model) toggleChangesOnly() {
 	}
 	m.renderDiffView()
 	m.diffViewport.GotoTop()
+	m.diffLastJump = -1
 }
 
 func (m *Model) reloadLocal() {
@@ -1719,6 +1731,7 @@ func (m *Model) finishLoading() {
 	m.progressTotal = 0
 	m.progressPhase = progress.PhaseUnknown
 	m.cancelOp = nil
+	m.upstreamScanActive = false
 }
 
 func progressTickCmd() tea.Cmd {
@@ -1779,6 +1792,36 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateViewportSizes()
 		return m, nil
 
+	case editorPreparedMsg:
+		return m.handleEditorPrepared(msg)
+	case editorFinishedMsg:
+		return m.handleEditorFinished(msg)
+	case configDraftErrorMsg:
+		m.finishLoading()
+		if m.view == viewModalEditJSON {
+			m.editJSONModal.Err = i18n.T("error.editor_failed", msg.err.Error())
+		} else {
+			m.err = fmt.Errorf("%s", i18n.T("error.editor_failed", msg.err.Error()))
+		}
+		return m, nil
+	case draftPreviewMsg:
+		if msg.id != m.editorOperation || !m.loading {
+			return m, nil
+		}
+		if msg.err != nil {
+			return m.Update(configDraftErrorMsg{err: msg.err})
+		}
+		m.pendingConfigEdit = msg.pending
+		return m.Update(configEditPreviewMsg{edit: msg.edit})
+	case draftWriteMsg:
+		if msg.id != m.editorOperation || !m.loading {
+			return m, nil
+		}
+		if msg.err != nil {
+			return m.Update(configDraftErrorMsg{err: msg.err})
+		}
+		return m.Update(asyncNoticeMsg(msg.notice))
+
 	case progressMsg:
 		// Unknown-phase updates only carry a detail line; they must not reset
 		// an in-flight determinate bar. Every other phase reports its own
@@ -1815,6 +1858,46 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.clampUpstreamCursor()
 		m.notice = i18n.T("notice.upstream_completed")
 		return m, nil
+
+	case upstreamAddedMsg:
+		if msg.id != m.upstreamOperation || !m.loading {
+			return m, nil
+		}
+		m.finishLoading()
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		m.addRegisteredUpstream(msg)
+		m.view = viewList
+		m.notice = i18n.T("notice.upstream_added", msg.url)
+		return m, m.startUpstreamScan(msg.url, msg.ref)
+
+	case upstreamProgressMsg:
+		if msg.id != m.upstreamOperation || !m.loading {
+			return m, nil
+		}
+		return m.Update(progressMsg{phase: msg.update.Phase, current: msg.update.Current, total: msg.update.Total, detail: msg.update.Text})
+
+	case upstreamScanMsg:
+		if msg.id != m.upstreamOperation || !m.loading {
+			return m, nil
+		}
+		m.finishLoading()
+		m.updateScannedUpstream(msg)
+		if msg.err != nil {
+			m.err = fmt.Errorf("%s", i18n.T("error.upstream_scan", msg.url, msg.err.Error()))
+		}
+		if len(msg.skills) == 0 {
+			m.view = viewList
+			if msg.err == nil {
+				m.notice = i18n.T("notice.upstream_scan_empty", msg.url)
+			}
+			return m, m.reloadAsync()
+		}
+		_, _ = m.Update(discoveredSkillsMsg{url: msg.url, ref: msg.ref, skills: msg.skills})
+		m.notice = i18n.T("notice.upstream_scan_complete", len(msg.skills))
+		return m, m.reloadAsync()
 
 	case discoveredSkillsMsg:
 		m.finishLoading()
@@ -1954,6 +2037,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.isModelsDiffConfirm = true
 		m.modelsDiffSummary = msg.summary
+		if len(msg.summary.Candidate) > 0 {
+			m.pendingConfigEdit = &pendingConfigEdit{channel: m.currentAgentChannel(), cfgFile: msg.summary.ConfigFile, originalHash: msg.summary.OriginalHash, candidate: append([]byte(nil), msg.summary.Candidate...)}
+		}
 		m.openDiff(msg.summary.DiffText)
 		return m, nil
 
@@ -1961,10 +2047,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.finishLoading()
 		if msg.edit == nil || !msg.edit.Modified {
 			m.pendingConfigEdit = nil
+			m.isModelsDiffConfirm = false
+			m.editJSONModal.OriginalHash = ""
 			m.notice = i18n.T("notice.model_config_unchanged")
 			return m, nil
 		}
 		m.isModelsDiffConfirm = true
+		if m.pendingConfigEdit != nil {
+			m.pendingConfigEdit.originalHash = msg.edit.OriginalHash
+			m.pendingConfigEdit.cfgFile = msg.edit.ConfigFile
+			if m.view == viewModalEditJSON {
+				m.editJSONModal.OriginalHash = msg.edit.OriginalHash
+				m.editJSONModal.CfgFile = msg.edit.ConfigFile
+			}
+		}
 		m.modelsDiffRulesOnly = false
 		m.openDiff(msg.edit.DiffText)
 		return m, nil
@@ -2029,6 +2125,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.settings = s.settings
 		m.caches = s.caches
 		m.upstreams = s.upstreams
+		for _, u := range m.upstreams {
+			if u.URL == m.upstreamDetailModal.Upstream.URL && u.Ref == m.upstreamDetailModal.Upstream.Ref {
+				m.upstreamDetailModal.Upstream = u
+				break
+			}
+		}
 		m.models = s.models
 		m.modelConfigFile = s.modelConfigFile
 		m.agentProviders = s.agentProviders
@@ -2109,18 +2211,28 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 			if msg.String() == "esc" {
+				wasScanning := m.upstreamScanActive
+				wasEditing := m.view == viewModalEditJSON
 				if m.cancelOp != nil {
 					m.cancelOp()
 				}
+				m.upstreamOperation++
+				m.editorOperation++
 				m.finishLoading()
 				m.notice = i18n.T("notice.cancelled")
+				if wasScanning {
+					m.notice = i18n.T("notice.upstream_scan_cancelled")
+				}
 				m.err = nil
 				m.view = viewList
+				if wasEditing {
+					m.view = viewModalEditJSON
+				}
 				m.addModal = newAddModal()
 				m.targetModal = newTargetModal()
 				m.projectModal = newProjectModal()
 				m.groupModal = newGroupModal()
-				return m, nil
+				return m, m.reloadAsync()
 			}
 			// Block all other operations during loading
 			return m, nil
@@ -2856,6 +2968,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "d": // Deploy
+			if m.activeTab != tabSkills && m.activeTab != tabChannels && m.activeTab != tabProjects {
+				return m, nil
+			}
 			if len(m.skills) == 0 {
 				m.notice = i18n.T("notice.no_skills_prompt")
 				return m, nil
@@ -2922,6 +3037,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = nil
 
 		case "D": // Undeploy
+			if m.activeTab != tabSkills && m.activeTab != tabChannels && m.activeTab != tabProjects {
+				return m, nil
+			}
 			if len(m.skills) == 0 {
 				m.notice = i18n.T("notice.no_skills_prompt")
 				return m, nil
@@ -3363,28 +3481,7 @@ func (m *Model) handleUpstreamDiscover() (tea.Model, tea.Cmd) {
 	displayed := m.displayedUpstreams()
 	if len(displayed) > 0 && m.upstreamCursor < len(displayed) {
 		selectedUp := displayed[m.upstreamCursor]
-		ctx, cancel := context.WithCancel(m.ctx)
-		m.cancelOp = cancel
-		m.loading = true
-		m.notice = fmt.Sprintf(i18n.T("notice.discovering_upstream"), selectedUp.URL)
-		return m, func() tea.Msg {
-			progressCb := m.progressCallback()
-			discovered, err := m.service.UpstreamDiscover(ctx, selectedUp.URL, selectedUp.Ref, progressCb)
-			if err != nil {
-				if ctx.Err() != nil {
-					return nil
-				}
-				return errMsg{err: err}
-			}
-			if ctx.Err() != nil {
-				return nil
-			}
-			return discoveredSkillsMsg{
-				url:    selectedUp.URL,
-				ref:    selectedUp.Ref,
-				skills: discovered,
-			}
-		}
+		return m, m.startUpstreamScan(selectedUp.URL, selectedUp.Ref)
 	}
 	return m, nil
 }
@@ -3678,6 +3775,9 @@ func (m *Model) handleDeployConflictKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleTargetDiffKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if handled, cmd := m.handleDiffNavigation(msg); handled {
+		return m, cmd
+	}
 	switch msg.String() {
 	case "esc", "q":
 		m.view = viewModalDeployConflict
@@ -3759,9 +3859,14 @@ func (m *Model) openDiff(diff string) {
 	m.diffContent = diff
 	m.diffSummary = diffview.Parse(diff)
 	m.diffChangesOnly = false
+	m.diffSearching = false
+	m.diffSearch = textinput.New()
+	m.diffPrefix = ""
+	m.diffLastJump = -1
 	m.view = viewDiff
 	m.updateViewportSizes()
 	m.diffViewport.GotoTop()
+	m.diffViewport.SetXOffset(0)
 }
 
 func (m *Model) handleModalAddKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -4844,18 +4949,28 @@ func (m *Model) handleModalAddUpstreamKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 		m.cancelOp = cancel
 		m.loading = true
 		m.notice = i18n.T("notice.adding_upstream", url)
+		m.upstreamOperation++
+		id := m.upstreamOperation
+		svc := m.service
 		return m, func() tea.Msg {
 			if ctx.Err() != nil {
 				return nil
 			}
-			err := m.service.UpstreamAdd(ctx, url, ref, name)
-			if err != nil {
-				if ctx.Err() != nil {
-					return nil
+			err := svc.UpstreamAdd(ctx, url, ref, name)
+			result := upstreamAddedMsg{id: id, url: url, ref: ref, name: name, sourceType: model.SourceTypeGit, err: err}
+			if err == nil {
+				expanded, expandErr := fsx.ExpandUser(url)
+				cfg, configErr := svc.Config()
+				if configErr == nil {
+					for _, u := range cfg.Upstreams {
+						if u.URL == url || (expandErr == nil && u.URL == expanded) {
+							result.url, result.ref, result.name, result.sourceType = u.URL, u.Ref, u.Name, u.Type
+							break
+						}
+					}
 				}
-				return errMsg{err: err}
 			}
-			return asyncNoticeMsg(fmt.Sprintf(i18n.T("notice.upstream_added"), url))
+			return result
 		}
 	}
 	return m, nil
@@ -4986,28 +5101,7 @@ func (m *Model) handleModalUpstreamDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cm
 		// Discover skills from this upstream and open add modal
 		m.view = viewList
 		u := m.upstreamDetailModal.Upstream
-		ctx, cancel := context.WithCancel(m.ctx)
-		m.cancelOp = cancel
-		m.loading = true
-		m.notice = fmt.Sprintf(i18n.T("notice.discovering_upstream"), u.URL)
-		return m, func() tea.Msg {
-			progressCb := m.progressCallback()
-			discovered, err := m.service.UpstreamDiscover(ctx, u.URL, u.Ref, progressCb)
-			if err != nil {
-				if ctx.Err() != nil {
-					return nil
-				}
-				return errMsg{err: err}
-			}
-			if ctx.Err() != nil {
-				return nil
-			}
-			return discoveredSkillsMsg{
-				url:    u.URL,
-				ref:    u.Ref,
-				skills: discovered,
-			}
-		}
+		return m, m.startUpstreamScan(u.URL, u.Ref)
 
 	case "u", "U":
 		// Update installed skills for this upstream
@@ -5039,16 +5133,8 @@ func (m *Model) handleModalUpstreamDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cm
 
 	case "r", "R":
 		// Refresh from local cache
-		m.reloadLocal()
-		m.reloadUpstreams()
-		for _, u := range m.upstreams {
-			if u.URL == m.upstreamDetailModal.Upstream.URL {
-				m.upstreamDetailModal.Upstream = u
-				break
-			}
-		}
 		m.notice = i18n.T("notice.upstreams_cache_refreshed")
-		return m, nil
+		return m, m.reloadAsync()
 
 	case "up", "k":
 		m.upstreamDetailModal.Viewport.LineUp(1)
@@ -6759,7 +6845,9 @@ func (m *Model) renderUpstreamsList() string {
 		}
 
 		var skillsSummary string
-		if u.CacheExists {
+		if u.ScanError != "" {
+			skillsSummary = i18n.T("upstream.skills_summary.failed", len(u.Skills))
+		} else if u.Scanned || u.CacheExists {
 			skillsSummary = fmt.Sprintf(i18n.T("upstream.skills_summary.cached"), len(u.AvailableSkills), len(u.Skills))
 		} else {
 			skillsSummary = fmt.Sprintf(i18n.T("upstream.skills_summary.uncached"), len(u.Skills))
@@ -7579,12 +7667,38 @@ func (m *Model) renderDiffDetail() string {
 	}
 
 	b.WriteString(header + "\n")
-	b.WriteString(m.diffViewport.View() + "\n\n")
+	footerKey := "footer.diff"
 	if m.isModelsDiffConfirm {
-		b.WriteString(m.renderWrappedFooter(i18n.T("footer.models_confirm")))
-	} else {
-		b.WriteString(m.renderWrappedFooter(i18n.T("footer.diff")))
+		footerKey = "footer.models_confirm"
 	}
+	if m.view == viewTargetDiff {
+		footerKey = "footer.target_diff"
+	}
+	footer := m.renderWrappedFooter(i18n.T(footerKey))
+	feedback := ""
+	if m.err != nil {
+		feedback = statusErrorStyle.Render(truncateToWidth(m.err.Error(), totalW))
+	} else if m.notice != "" {
+		feedback = statusNoticeStyle.Render(truncateToWidth(m.notice, totalW))
+	}
+	if m.height > 0 {
+		reserved := lipgloss.Height(m.renderTabsBar()) + 1 + 2 + lipgloss.Height(footer)
+		if feedback != "" {
+			reserved++
+		}
+		if m.diffSearching {
+			reserved++
+		}
+		m.diffViewport.Height = max(1, m.height-reserved)
+	}
+	b.WriteString(m.diffViewport.View() + "\n\n")
+	if m.diffSearching {
+		b.WriteString(m.diffSearch.View() + "\n")
+	}
+	if feedback != "" {
+		b.WriteString(feedback + "\n")
+	}
+	b.WriteString(footer)
 	return b.String()
 }
 
@@ -7651,8 +7765,32 @@ func (m *Model) handleDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleDiffKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if handled, cmd := m.handleDiffNavigation(msg); handled {
+		return m, cmd
+	}
 	if m.isModelsDiffConfirm {
 		switch msg.String() {
+		case "e":
+			if edit := m.pendingConfigEdit; edit != nil && !edit.remove {
+				if m.editJSONModal.CfgFile != edit.cfgFile || m.editJSONModal.OriginalHash != edit.originalHash || strings.Join(m.editJSONModal.Path, "\x00") != strings.Join(edit.fieldPath, "\x00") {
+					m.editJSONModal = newJSONEditModal(i18n.T("modal.edit_json.title", strings.Join(edit.fieldPath, ".")), edit.channel, edit.cfgFile, edit.fieldPath, edit.value)
+					if edit.candidate != nil {
+						m.editJSONModal.setDraft(string(edit.candidate))
+					}
+				}
+				m.editJSONModal.OriginalHash = edit.originalHash
+				m.isModelsDiffConfirm = false
+				m.view = viewModalEditJSON
+				return m, nil
+			}
+			if summary := m.modelsDiffSummary; summary != nil && len(summary.Candidate) > 0 {
+				m.editJSONModal = newJSONEditModal(i18n.T("modal.edit_json.title", filepath.Base(summary.ConfigFile)), m.currentAgentChannel(), summary.ConfigFile, nil, nil)
+				m.editJSONModal.setDraft(string(summary.Candidate))
+				m.editJSONModal.OriginalHash = summary.OriginalHash
+				m.isModelsDiffConfirm = false
+				m.view = viewModalEditJSON
+				return m, nil
+			}
 		case "esc", "q", "n":
 			m.view = viewList
 			m.isModelsDiffConfirm = false
@@ -7730,6 +7868,9 @@ func (m *Model) handleDiffKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.err = nil
 		return m, nil
 	case "u":
+		if m.isModelsDiffConfirm {
+			return m, nil
+		}
 		if sk, ok := m.selectedSkill(); ok {
 			skID := sk.ID
 			ctx, cancel := context.WithCancel(m.ctx)
@@ -8133,19 +8274,23 @@ func (m *Model) rawValueForField(field EditableField) any {
 func (m *Model) handleModalEditJSONKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
-		m.view = viewModalEditField
+		if m.modelsDiffSummary != nil || m.pendingConfigEdit != nil {
+			m.isModelsDiffConfirm = true
+			m.view = viewDiff
+		} else {
+			m.view = viewModalEditField
+		}
 		m.editJSONModal.Err = ""
 		return m, nil
 	case "ctrl+s":
-		var value any
-		if err := json.Unmarshal([]byte(m.editJSONModal.Input.Value()), &value); err != nil {
-			m.editJSONModal.Err = err.Error()
-			return m, nil
-		}
-		m.editJSONModal.Err = ""
-		return m.previewConfigEdit(m.editJSONModal.Channel, m.editJSONModal.CfgFile, m.editJSONModal.Path, value, false)
+		return m.previewJSONDraft()
+	case "ctrl+e":
+		return m.openExternalEditor()
 	default:
 		var cmd tea.Cmd
+		if m.editJSONModal.ReadOnly {
+			return m, nil
+		}
 		m.editJSONModal.Input, cmd = m.editJSONModal.Input.Update(msg)
 		return m, cmd
 	}
@@ -8153,29 +8298,35 @@ func (m *Model) handleModalEditJSONKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // previewConfigEdit computes the diff for a pending edit and opens the confirm view.
 func (m *Model) previewConfigEdit(channel, cfgFile string, path []string, value any, remove bool) (tea.Model, tea.Cmd) {
-	m.pendingConfigEdit = &pendingConfigEdit{
+	m.editorOperation++
+	id := m.editorOperation
+	pending := &pendingConfigEdit{
 		channel:   channel,
 		cfgFile:   cfgFile,
 		fieldPath: path,
 		value:     value,
 		remove:    remove,
 	}
+	if m.view == viewModalEditJSON {
+		pending.originalHash = m.editJSONModal.OriginalHash
+	}
 	ctx, cancel := context.WithCancel(m.ctx)
 	m.cancelOp = cancel
 	m.loading = true
 	m.notice = i18n.T("notice.generating_config_diff")
+	expectedHash := pending.originalHash
 	return m, func() tea.Msg {
-		edit, err := m.service.PreviewAgentConfigValue(ctx, channel, cfgFile, path, value, remove)
+		edit, err := m.service.PreviewAgentConfigValue(ctx, channel, cfgFile, path, value, remove, expectedHash)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
-			return errMsg{err: err}
+			return draftPreviewMsg{id: id, err: err}
 		}
 		if ctx.Err() != nil {
 			return nil
 		}
-		return configEditPreviewMsg{edit: edit}
+		return draftPreviewMsg{id: id, edit: edit, pending: pending}
 	}
 }
 
@@ -8185,6 +8336,8 @@ func (m *Model) applyPendingConfigEdit() (tea.Model, tea.Cmd) {
 	if edit == nil {
 		return m, nil
 	}
+	m.editorOperation++
+	id := m.editorOperation
 	ctx, cancel := context.WithCancel(m.ctx)
 	m.cancelOp = cancel
 	m.loading = true
@@ -8194,13 +8347,21 @@ func (m *Model) applyPendingConfigEdit() (tea.Model, tea.Cmd) {
 	fieldPath := append([]string(nil), edit.fieldPath...)
 	value := edit.value
 	remove := edit.remove
+	expectedHash := edit.originalHash
+	candidate := append([]byte(nil), edit.candidate...)
 	return m, func() tea.Msg {
-		result, err := m.service.ApplyAgentConfigValue(ctx, channel, cfgFile, fieldPath, value, remove)
+		var result *app.AgentConfigEdit
+		var err error
+		if candidate != nil {
+			result, err = m.service.EditAgentConfigDraft(ctx, channel, cfgFile, candidate, expectedHash, false)
+		} else {
+			result, err = m.service.ApplyAgentConfigValue(ctx, channel, cfgFile, fieldPath, value, remove, expectedHash)
+		}
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
-			return errMsg{err: err}
+			return draftWriteMsg{id: id, err: err}
 		}
 		if ctx.Err() != nil {
 			return nil
@@ -8209,7 +8370,7 @@ func (m *Model) applyPendingConfigEdit() (tea.Model, tea.Cmd) {
 		if result != nil && result.BackupFile != "" {
 			msg += i18n.T("notice.backup_saved_comma", filepath.Base(result.BackupFile))
 		}
-		return asyncNoticeMsg(msg)
+		return draftWriteMsg{id: id, notice: msg}
 	}
 }
 

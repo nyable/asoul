@@ -34,11 +34,13 @@ type ModelEnrichResult struct {
 
 // EnrichSummary summarizes the enrichment operation.
 type EnrichSummary struct {
-	ConfigFile string              `json:"configFile"`
-	BackupFile string              `json:"backupFile,omitempty"`
-	Modified   bool                `json:"modified"`
-	Results    []ModelEnrichResult `json:"results"`
-	DiffText   string              `json:"diffText,omitempty"`
+	ConfigFile   string              `json:"configFile"`
+	BackupFile   string              `json:"backupFile,omitempty"`
+	Modified     bool                `json:"modified"`
+	Results      []ModelEnrichResult `json:"results"`
+	DiffText     string              `json:"diffText,omitempty"`
+	Candidate    []byte              `json:"-"`
+	OriginalHash string              `json:"-"`
 }
 
 // AgentAdapter abstracts an agent's configuration loading, parsing, and updating.

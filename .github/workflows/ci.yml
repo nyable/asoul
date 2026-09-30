@@ -35,3 +35,19 @@ jobs:
 
       - name: Build binary
         run: go build -o /tmp/asoul ./cmd/asoul
+
+  windows-editor:
+    name: Windows editor and file access
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+          cache: true
+      - name: Test native editor launch, quoting and ACLs
+        run: go test -v ./internal/editor ./internal/agent
+      - name: Verify Windows atomic writes preserve ACLs
+        run: go test -v ./internal/fsx -run TestAtomicWritePreservesWindowsDACL
+      - name: Build Windows CLI
+        run: go build -o "$env:RUNNER_TEMP/asoul.exe" ./cmd/asoul

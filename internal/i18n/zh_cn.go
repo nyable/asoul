@@ -38,7 +38,8 @@ var zhCNDict = map[string]string{
 	"table.header.upstream_skills":     "技能 (总数/已引用)",
 	"table.header.upstream_ref":        "分支/Ref",
 	"upstream.skills_summary.cached":   "共 %d 个 (已引用 %d)",
-	"upstream.skills_summary.uncached": "未缓存 (已引用 %d)",
+	"upstream.skills_summary.uncached": "未扫描（已引用 %d）",
+	"upstream.skills_summary.failed":   "扫描失败（已引用 %d）",
 	"upstream.status.up_to_date":       "最新",
 	"upstream.status.update_available": "有可用更新",
 	"upstream.status.source_changed":   "上游变更",
@@ -105,21 +106,32 @@ var zhCNDict = map[string]string{
 	"system.subtab.cache":  "缓存 (%d)",
 	"system.subtab.doctor": "诊断",
 
-	"footer.dashboard":       "[u] 更新全部待更新 • [r] 全量检查上游更新 • [?] 帮助 • [q] 退出",
-	"footer.upstreams":       "[i] 详情 • [s] 查看技能并添加 • [a] 新增上游 • [e] 编辑配置 • [r] 刷新缓存 • [c] 检查上游更新 • [u] 更新技能 • [x/d] 移除 • [/] 搜索 • [?] 帮助 • [q] 退出",
-	"footer.skills":          "[Space] 勾选 • [a] 添加 • [n] 新建 • [i] 详情 • [v] 差异 • [u] 更新 • [d] 部署 • [r] 刷新 • [x] 删除 • [X] 条件删除 • [/] 搜索 • [?] 帮助 • [q] 退出",
-	"footer.channels":        "[t] 启用/禁用 • [d] 分发 • [D] 卸载 • [a] 添加 • [x] 删除 • [i] 行详情 • [I] 渠道详情 • [f] 筛选 • [r] 刷新",
-	"footer.channels.models": "模型配置（OpenCode）：[e] 补全并预览 • [R] 仅规则 • [o] 同步模式 • [c] 配置文件",
-	"footer.help_entry":      "[?] 帮助",
-	"footer.quit_entry":      "[q] 退出",
-	"footer.projects":        "[Space/t] 启用/禁用 • [f] 筛选 • [/] 搜索 • [i] 详情 • [d] 分发 • [D] 卸载 • [a] 添加 • [x] 删除 • [r] 刷新 • [?] 帮助 • [q] 退出",
-	"footer.groups":          "[/] 搜索 • [a] 新建分组 • [e] 分配技能 • [d] 部署分组 • [r] 刷新 • [x] 删除分组 • [?] 帮助 • [q] 退出",
-	"footer.cache":           "[/] 搜索 • [p] 清理无用缓存 • [c] 清空全部缓存 • [r] 刷新 • [?] 帮助 • [q] 退出",
-	"footer.doctor":          "[r] 重新诊断 • [c] 清理临时残留 • [?] 帮助 • [q] 退出",
-	"footer.settings":        "[Space]: 切换 • [e]: 修改值 • [I]: 初始化工作区 • [/] 搜索 • [r]: 重新加载 • [?] 帮助 • [q]: 退出",
-	"footer.models_confirm":  "[Enter/y] 确认写入并备份 • [Esc/q/n] 取消放弃 • [t] 仅显示差异",
-	"footer.detail":          "[u] 更新技能 • [d] 部署技能 • [Esc/q] 返回",
-	"footer.diff":            "[t] 仅显示差异 • [u] 更新技能 • [Esc/q] 返回",
+	"footer.dashboard":               "[u] 更新全部待更新 • [r] 全量检查上游更新 • [?] 帮助 • [q] 退出",
+	"footer.upstreams":               "[i] 详情 • [s] 扫描并添加技能 • [a] 新增并扫描 • [e] 编辑配置 • [r] 重读本地缓存 • [c] 拉取并检查上游 • [u] 更新技能 • [x/Del] 移除 • [/] 搜索 • [?] 帮助 • [q] 退出",
+	"footer.skills":                  "[Space] 勾选 • [a] 添加 • [n] 新建 • [i] 详情 • [v] 差异 • [u] 更新 • [d] 部署 • [r] 刷新 • [x] 删除 • [X] 条件删除 • [/] 搜索 • [?] 帮助 • [q] 退出",
+	"footer.channels":                "[t] 启用/禁用 • [d] 分发 • [D] 卸载 • [a] 添加 • [x] 删除 • [i] 行详情 • [I] 渠道详情 • [f] 筛选 • [r] 刷新",
+	"footer.channels.models":         "模型配置（OpenCode）：[e] 补全并预览 • [R] 仅规则 • [o] 同步模式 • [c] 配置文件",
+	"footer.help_entry":              "[?] 帮助",
+	"footer.quit_entry":              "[q] 退出",
+	"footer.projects":                "[Space/t] 启用/禁用 • [f] 筛选 • [/] 搜索 • [i] 详情 • [d] 分发 • [D] 卸载 • [a] 添加 • [x] 删除 • [r] 刷新 • [?] 帮助 • [q] 退出",
+	"footer.groups":                  "[/] 搜索 • [a] 新建分组 • [e] 分配技能 • [d] 部署分组 • [r] 刷新 • [x] 删除分组 • [?] 帮助 • [q] 退出",
+	"footer.cache":                   "[/] 搜索 • [p] 清理无用缓存 • [c] 清空全部缓存 • [r] 刷新 • [?] 帮助 • [q] 退出",
+	"footer.doctor":                  "[r] 重新诊断 • [c] 清理临时残留 • [?] 帮助 • [q] 退出",
+	"footer.settings":                "[Space]: 切换 • [e]: 修改值 • [I]: 初始化工作区 • [/] 搜索 • [r]: 重新加载 • [?] 帮助 • [q]: 退出",
+	"footer.models_confirm":          "[Enter/y] 确认写入并备份 • [e] 编辑草稿 • [Esc/q/n] 取消 • [t] 仅显示差异 • [/] 搜索 • [n/N] 匹配 • []c/[c] 差异块",
+	"footer.detail":                  "[u] 更新技能 • [d] 部署技能 • [Esc/q] 返回",
+	"footer.diff":                    "[t] 仅显示差异 • [/] 搜索 • [n/N] 匹配 • []c/[c] 差异块 • [h/l] 横向滚动 • [u] 更新技能 • [Esc/q] 返回",
+	"notice.upstream_scan_empty":     "已扫描来源 %s，未发现技能。按 s 可重试。",
+	"notice.upstream_scan_complete":  "发现 %d 个技能。请选择要导入的技能；关闭此窗口仍保留来源登记。",
+	"notice.upstream_scan_cancelled": "扫描已取消，已登记来源仍保留。按 s 可重试。",
+	"error.upstream_scan":            "未能完整扫描 %s：%s。来源仍保留，按 s 可重试。",
+	"notice.editor_preparing":        "正在准备私有编辑草稿……",
+	"notice.editor_running":          "正在编辑临时草稿；保存并关闭编辑器后返回。",
+	"error.editor_unavailable":       "未找到外部编辑器。请配置 editor.command / editor.args 或 VISUAL / EDITOR；仍可在此编辑。",
+	"error.editor_failed":            "编辑器或草稿操作失败：%s。草稿保留在此窗口，原文件未改动。",
+	"error.editor_invalid_json":      "JSON/JSONC 无效：%s。草稿已保留，可在此修复或按 Ctrl+E 重新打开编辑器。",
+	"notice.diff_search_empty":       "差异中没有匹配 %s 的内容。",
+	"footer.target_diff":             "[t] 仅显示差异 • [/] 搜索 • [n/N] 匹配 • []c/[c] 差异块 • [h/l] 横向滚动 • [Esc/q] 返回冲突处理",
 
 	// Dashboard
 	"dashboard.workspace_label":          "🏠 工作区: ",
@@ -570,8 +582,9 @@ var zhCNDict = map[string]string{
 	"modal.edit_field.json_value":     "(JSON 对象)",
 
 	// Raw JSON edit modal
-	"modal.edit_json.title": "编辑原始 JSON - %s",
-	"modal.edit_json.hint":  "[Ctrl+S] 校验并预览差异 • [Esc] 返回",
+	"modal.edit_json.title":       "编辑原始 JSON - %s",
+	"modal.edit_json.hint":        "[Ctrl+E] 外部编辑器 • [Ctrl+S] 校验并预览差异 • [Esc] 返回（保留草稿）",
+	"modal.edit_json.large_draft": "大草稿：内置显示已截断且只读。Ctrl+E 编辑完整草稿，Ctrl+S 预览完整内容。",
 
 	"settings.item.workspace":             "技能工作区管理",
 	"settings.desc.workspace":             "登记、管理与快速切换多个技能工作区目录",
@@ -627,7 +640,7 @@ var zhCNDict = map[string]string{
   Tab         在当前页层级间循环（一级 → 二级 → 一级）；无二级标签时无变化
   S-Tab       反向循环层级（两级时等同 Tab）；Esc 返回上级
   [ / ]       仅在聚焦顶级时切换上一页 / 下一页
-  m / s       快速直达 [4. 渠道配置] / [7. 设置]
+  m / s       直达渠道配置 / 设置（Sources 页的 s 用于扫描技能）
   ↑ / k       光标向上移动
   ↓ / j       光标向下移动
   /           搜索过滤当前列表
@@ -645,13 +658,15 @@ Enter 仅用于弹窗（确认 / 提交），在主列表不再绑定默认动�
   ↑ / ↓       在来源列表之间移动
   i           查看上游源详情（URL、分支、缓存、受管技能等）
   s           浏览该来源中的全部技能并添加
-  a           添加新的上游来源
+  a           登记来源后自动扫描并选择技能（不自动导入）
   e           编辑上游源别名配置
   r           从本地缓存刷新来源信息
-  c           检查上游更新
+  c           拉取上游并刷新可用技能（包括尚未导入技能的来源）
   u           更新属于该来源的全部受管技能
   x / Del     移除上游来源
-  /           搜索过滤`,
+  /           搜索过滤
+  未扫描、失败和空结果分别显示；s 重试，r 不联网拉取。
+  d / D       Sources 页不执行部署操作`,
 	"help.page.skills": `技能操作：
   ↑ / ↓       移动光标
   Space       勾选/取消勾选技能进行多选
@@ -693,7 +708,11 @@ Enter 仅用于弹窗（确认 / 提交），在主列表不再绑定默认动�
     e           从 models.dev 补全模型配置并预览差异
     R           仅按自定义规则重新生成配置
     o           切换同步模式（同步上游 / 补齐缺失）
-    c           查看模型配置文件`,
+    c           查看模型配置文件
+  差异：/ 搜索；n/N 下一/上一匹配（未搜索时 n 取消）；]c/[c 跳转差异块。
+  差异：gg/G 首/末；h/l 横向滚动；e 编辑候选草稿。
+  JSON 编辑：Ctrl+E 外部编辑器；Ctrl+S 校验并预览；Esc 返回。
+  保存并关闭外部编辑器后返回，确认差异才写入真实文件。`,
 	"help.page.projects": `项目工程操作：
   ↑ / ↓       移动光标
   i           查看项目详情
@@ -783,7 +802,7 @@ Enter 仅用于弹窗（确认 / 提交），在主列表不再绑定默认动�
 	"modal.upstream.add.url_label":              "上游仓库地址或本地目录 (Git URL / Local Path):",
 	"modal.upstream.add.ref_label":              "跟踪分支/Tag/Commit (可选，留空为默认主分支):",
 	"modal.upstream.add.name_label":             "上游别名/显示名称 (可选):",
-	"modal.upstream.add.hint":                   "[Tab/↓↑] 切换输入框 • [Enter] 保存并发现技能 • [Esc] 取消",
+	"modal.upstream.add.hint":                   "[Tab/Shift+Tab] 切换输入框 • [Enter] 登记并扫描（不自动导入） • [Esc] 取消",
 	"modal.upstream.edit.title":                 "✏️ 编辑上游源配置",
 	"modal.upstream.edit.url_label":             "上游地址: ",
 	"modal.upstream.edit.ref_label":             "跟踪分支/Tag/Commit:",

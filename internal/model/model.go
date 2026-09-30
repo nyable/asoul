@@ -97,6 +97,8 @@ type UpstreamInfo struct {
 	UpdatedAt       string         `json:"updatedAt,omitempty"`
 	CachePath       string         `json:"cachePath,omitempty"`
 	CacheExists     bool           `json:"cacheExists"`
+	Scanned         bool           `json:"scanned"`
+	ScanError       string         `json:"scanError,omitempty"`
 }
 
 // SkillMetadata holds parsed information from SKILL.md.
@@ -220,10 +222,17 @@ type UpstreamConfig struct {
 	UpdatedAt string     `json:"updatedAt,omitempty"`
 }
 
+// EditorConfig stores an executable and arguments without shell parsing.
+type EditorConfig struct {
+	Command string   `json:"command"`
+	Args    []string `json:"args,omitempty"`
+}
+
 // Config represents user-level configuration stored in config.jsonc.
 type Config struct {
 	Version           int                      `json:"version"`
 	Language          string                   `json:"language,omitempty"`
+	Editor            *EditorConfig            `json:"editor,omitempty"`
 	DefaultRoot       string                   `json:"default_root,omitempty"`
 	Workspaces        []string                 `json:"workspaces,omitempty"`
 	Upstreams         []UpstreamConfig         `json:"upstreams,omitempty"`

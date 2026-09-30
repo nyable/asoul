@@ -194,6 +194,45 @@ func TestCLIUpstreamSkills(t *testing.T) {
 	}
 }
 
+func TestCLIUpstreamSkillsEmptyAndPartialFailureJSON(t *testing.T) {
+	ws, cfg, _, cleanup := setupTestEnvironment(t)
+	defer cleanup()
+	dir := t.TempDir()
+	stdout, _, err := executeCommandWithStdout("--root", ws, "--config", cfg, "upstream", "skills", dir, "--json")
+	if err != nil || strings.TrimSpace(stdout) != "[]" {
+		t.Fatalf("empty must be []: %q %v", stdout, err)
+	}
+	for _, id := range []string{"valid", "broken"} {
+		d := filepath.Join(dir, id)
+		if err := os.MkdirAll(d, 0700); err != nil {
+			t.Fatal(err)
+		}
+		content := "broken"
+		if id == "valid" {
+			content = "---\nname: valid\ndescription: fixture\n---\n# Valid"
+		}
+		if err := os.WriteFile(filepath.Join(d, "SKILL.md"), []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stdout, _, err = executeCommandWithStdout("--root", ws, "--config", cfg, "upstream", "skills", dir, "--json")
+	if err == nil {
+		t.Fatal("partial failure should be nonzero")
+	}
+	var result struct {
+		Skills []struct {
+			ID string `json:"id"`
+		} `json:"skills"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("invalid JSON %q %v", stdout, err)
+	}
+	if len(result.Skills) != 1 || result.Skills[0].ID != "valid" || !strings.Contains(result.Error, "broken") {
+		t.Fatalf("missing successful result or failure %+v", result)
+	}
+}
+
 func TestCLIUpstreamPull(t *testing.T) {
 	wsRoot, cfgPath, tmpDir, cleanup := setupTestEnvironment(t)
 	defer cleanup()

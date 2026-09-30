@@ -254,17 +254,43 @@ func plainValue(f EditableField) string {
 
 // JSONEditModalState manages raw JSON editing of a config object.
 type JSONEditModalState struct {
-	Title   string
-	Channel string
-	CfgFile string
-	Path    []string
-	Input   textarea.Model
-	Err     string
+	Title        string
+	Channel      string
+	CfgFile      string
+	Path         []string
+	Input        textarea.Model
+	Err          string
+	OriginalHash string
+	// Keep exact external bytes while textarea normalizes CRLF and tabs for display.
+	RawDraft       string
+	DisplayedDraft string
+	HasRawDraft    bool
+	ReadOnly       bool
+}
+
+func (s *JSONEditModalState) setDraft(content string) {
+	s.Input.SetValue(content)
+	s.RawDraft = content
+	s.DisplayedDraft = s.Input.Value()
+	s.HasRawDraft = true
+	s.ReadOnly = strings.Count(content, "\n") >= 10000
+}
+
+func (s *JSONEditModalState) draftContent() string {
+	if s.HasRawDraft && s.Input.Value() == s.DisplayedDraft {
+		return s.RawDraft
+	}
+	content := s.Input.Value()
+	if strings.Contains(s.RawDraft, "\r\n") {
+		content = strings.ReplaceAll(strings.ReplaceAll(content, "\r\n", "\n"), "\n", "\r\n")
+	}
+	return content
 }
 
 func newJSONEditModal(title, channel, cfgFile string, path []string, value any) JSONEditModalState {
 	ta := textarea.New()
 	ta.CharLimit = 0
+	ta.MaxHeight = 1000000
 	ta.ShowLineNumbers = true
 	ta.SetWidth(70)
 	ta.SetHeight(14)
@@ -303,6 +329,9 @@ func RenderJSONEditModal(state *JSONEditModalState, box lipgloss.Style, termWidt
 	var b strings.Builder
 	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#74B9FF")).Render(state.Title) + "\n\n")
 	b.WriteString(state.Input.View() + "\n")
+	if state.ReadOnly {
+		b.WriteString(i18n.T("modal.edit_json.large_draft") + "\n")
+	}
 	if state.Err != "" {
 		b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#D63031")).Render("❌ "+state.Err) + "\n")
 	}

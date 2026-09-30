@@ -63,6 +63,44 @@ func setupUpstreamGitRepo(t *testing.T, parentDir string) string {
 	return repoDir
 }
 
+func TestConfiguredUpstreamCheckScansWithoutImports(t *testing.T) {
+	svc, tmp, cleanup := setupTestService(t)
+	defer cleanup()
+	ctx := context.Background()
+	if _, err := svc.InitWorkspace(ctx, filepath.Join(tmp, "ws")); err != nil {
+		t.Fatal(err)
+	}
+	repo := setupUpstreamGitRepo(t, tmp)
+	url := "file://" + repo
+	if err := svc.UpstreamAdd(ctx, url, "", "fixture"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := svc.UpstreamList(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before) != 1 || before[0].Scanned {
+		t.Fatalf("registration should not scan %+v", before)
+	}
+	after, err := svc.UpstreamCheck(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != 1 || !after[0].Scanned || len(after[0].AvailableSkills) != 2 || len(after[0].Skills) != 0 {
+		t.Fatalf("did not discover configured source %+v", after)
+	}
+	if err := os.Rename(repo, repo+"-unavailable"); err != nil {
+		t.Fatal(err)
+	}
+	failed, err := svc.UpstreamCheck(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed[0].Error == "" || failed[0].Status != model.UpstreamUnreachable {
+		t.Fatalf("fetch failure swallowed %+v", failed)
+	}
+}
+
 func TestUpstreamManagement(t *testing.T) {
 	ctx := context.Background()
 	svc, tmpDir, cleanup := setupTestService(t)

@@ -189,7 +189,7 @@ func newUpstreamSkillsCmd() *cobra.Command {
 			if !out.json {
 				out.ClearProgress()
 			}
-			if err != nil {
+			if err != nil && len(discovered) == 0 && !out.json {
 				return err
 			}
 
@@ -208,7 +208,7 @@ func newUpstreamSkillsCmd() *cobra.Command {
 				Installed   bool   `json:"installed"`
 			}
 
-			var items []skillItem
+			items := []skillItem{}
 			for _, sk := range discovered {
 				items = append(items, skillItem{
 					ID:          sk.ID,
@@ -219,6 +219,15 @@ func newUpstreamSkillsCmd() *cobra.Command {
 			}
 
 			if out.json {
+				if err != nil {
+					if printErr := out.PrintJSON(struct {
+						Skills []skillItem `json:"skills"`
+						Error  string      `json:"error"`
+					}{items, err.Error()}); printErr != nil {
+						return printErr
+					}
+					return err
+				}
 				return out.PrintJSON(items)
 			}
 
@@ -240,7 +249,10 @@ func newUpstreamSkillsCmd() *cobra.Command {
 				}
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", it.ID, st, it.Path, desc)
 			}
-			return w.Flush()
+			if flushErr := w.Flush(); flushErr != nil {
+				return flushErr
+			}
+			return err
 		},
 	}
 

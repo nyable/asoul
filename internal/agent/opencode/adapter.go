@@ -2,9 +2,11 @@ package opencode
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"asoul/internal/agent"
 	"asoul/internal/agentmodel"
@@ -223,14 +225,19 @@ func (a *Adapter) Enrich(ctx context.Context, matcher *modelsdev.Matcher, rules 
 	if modified && len(updatedBytes) > 0 && updatedBytes[len(updatedBytes)-1] != '\n' {
 		updatedBytes = append(updatedBytes, '\n')
 	}
+	if strings.Contains(string(rawBytes), "\r\n") {
+		updatedBytes = []byte(strings.ReplaceAll(strings.ReplaceAll(string(updatedBytes), "\r\n", "\n"), "\n", "\r\n"))
+	}
 
 	diffText := agent.UnifiedDiff(string(rawBytes), string(updatedBytes))
 
 	summary := &agent.EnrichSummary{
-		ConfigFile: targetFile,
-		Modified:   modified,
-		Results:    results,
-		DiffText:   diffText,
+		ConfigFile:   targetFile,
+		Modified:     modified,
+		Results:      results,
+		DiffText:     diffText,
+		Candidate:    append([]byte(nil), updatedBytes...),
+		OriginalHash: fmt.Sprintf("%x", sha256.Sum256(rawBytes)),
 	}
 
 	if opts.DryRun || !modified {

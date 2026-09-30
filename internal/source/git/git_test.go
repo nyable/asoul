@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"asoul/internal/cache"
@@ -12,6 +13,57 @@ import (
 	"asoul/internal/model"
 	"asoul/internal/skill"
 )
+
+func TestDiscoverNestedSkillsAndReportInvalidFiles(t *testing.T) {
+	repo := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=test@example.com", "GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=test@example.com")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v %s", err, out)
+		}
+	}
+	run("init")
+	for _, id := range []string{"vue", "vite", "pinia"} {
+		dir := filepath.Join(repo, "skills", id)
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), skill.GenerateSkillMD(id, "fixture"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bad := filepath.Join(repo, "skills", "broken")
+	if err := os.MkdirAll(bad, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bad, "SKILL.md"), []byte("invalid frontmatter"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run("add", ".")
+	run("commit", "-m", "fixture")
+	cm, err := cache.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := New(gitx.NewClient(), cm)
+	found, err := src.DiscoverSkills(context.Background(), repo, "")
+	if len(found) != 3 || err == nil || !strings.Contains(err.Error(), "skills/broken/SKILL.md") {
+		t.Fatalf("%+v %v", found, err)
+	}
+	for _, s := range found {
+		if s.Path != "skills/"+s.ID {
+			t.Fatalf("nested path lost %+v", s)
+		}
+	}
+	// A cache-only refresh must not resolve a new remote branch by fetching.
+	run("branch", "new-remote-only")
+	if _, err := src.DiscoverSkillsCached(context.Background(), repo, "new-remote-only"); err == nil {
+		t.Fatal("cache-only discovery fetched a missing ref")
+	}
+}
 
 func TestGitSource_ResolveBatch(t *testing.T) {
 	ctx := context.Background()
