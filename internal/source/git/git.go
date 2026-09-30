@@ -59,15 +59,16 @@ func (s *Source) EnsureRepo(ctx context.Context, url string, fetch bool, onProgr
 	return repoDir, nil
 }
 
-// DiscoverSkills inspects a git repository at the given ref and finds all valid skills,
-// prioritizing the local bare cache without network, only cloning if no cache exists.
-func (s *Source) DiscoverSkills(ctx context.Context, url, ref string, onProgress ...progress.Func) ([]DiscoveredSkill, error) {
-	return s.DiscoverSkillsWithFetch(ctx, url, ref, false, onProgress...)
+// DiscoverSkills inspects a git repository at the given ref and finds all valid skills
+// inside the configured scan scope, prioritizing the local bare cache without network,
+// only cloning if no cache exists.
+func (s *Source) DiscoverSkills(ctx context.Context, url, ref string, scan model.ScanConfig, onProgress ...progress.Func) ([]DiscoveredSkill, error) {
+	return s.DiscoverSkillsWithFetch(ctx, url, ref, scan, false, onProgress...)
 }
 
-// DiscoverSkillsWithFetch inspects a git repository at the given ref and finds all valid skills,
-// optionally forcing a network fetch first.
-func (s *Source) DiscoverSkillsWithFetch(ctx context.Context, url, ref string, fetch bool, onProgress ...progress.Func) ([]DiscoveredSkill, error) {
+// DiscoverSkillsWithFetch inspects a git repository at the given ref and finds all valid
+// skills inside the configured scan scope, optionally forcing a network fetch first.
+func (s *Source) DiscoverSkillsWithFetch(ctx context.Context, url, ref string, scan model.ScanConfig, fetch bool, onProgress ...progress.Func) ([]DiscoveredSkill, error) {
 	repoDir, err := s.EnsureRepo(ctx, url, fetch, onProgress...)
 	if err != nil {
 		return nil, err
@@ -86,31 +87,36 @@ func (s *Source) DiscoverSkillsWithFetch(ctx context.Context, url, ref string, f
 		}
 	}
 
-	return s.discoverAtCommit(ctx, repoDir, commit, onProgress...)
+	return s.discoverAtCommit(ctx, repoDir, commit, scan, onProgress...)
 }
 
 // DiscoverSkillsCached never clones or fetches, even when the ref cannot be resolved.
-func (s *Source) DiscoverSkillsCached(ctx context.Context, url, ref string) ([]DiscoveredSkill, error) {
+func (s *Source) DiscoverSkillsCached(ctx context.Context, url, ref string, scan model.ScanConfig) ([]DiscoveredSkill, error) {
 	repoDir := s.cacheManager.RepoDir(url)
 	commit, err := s.client.ResolveRef(ctx, repoDir, ref)
 	if err != nil {
 		return nil, err
 	}
-	return s.discoverAtCommit(ctx, repoDir, commit)
+	return s.discoverAtCommit(ctx, repoDir, commit, scan)
 }
 
-func (s *Source) discoverAtCommit(ctx context.Context, repoDir, commit string, onProgress ...progress.Func) ([]DiscoveredSkill, error) {
+func (s *Source) discoverAtCommit(ctx context.Context, repoDir, commit string, scan model.ScanConfig, onProgress ...progress.Func) ([]DiscoveredSkill, error) {
 	files, err := s.client.ListTree(ctx, repoDir, commit, "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to list repository tree: %w", err)
 	}
 
+	scope := scan.Normalized()
 	var skillMDPaths []string
 	for _, f := range files {
 		clean := filepath.ToSlash(f)
-		if filepath.Base(clean) == "SKILL.md" {
-			skillMDPaths = append(skillMDPaths, clean)
+		if filepath.Base(clean) != "SKILL.md" {
+			continue
 		}
+		if !model.InScanScope(filepath.Dir(clean), scope.Roots, scope.Exclude) {
+			continue
+		}
+		skillMDPaths = append(skillMDPaths, clean)
 	}
 
 	if len(skillMDPaths) == 0 {

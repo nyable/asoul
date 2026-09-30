@@ -203,7 +203,7 @@ func TestCLIUpstreamSkillsEmptyAndPartialFailureJSON(t *testing.T) {
 		t.Fatalf("empty must be []: %q %v", stdout, err)
 	}
 	for _, id := range []string{"valid", "broken"} {
-		d := filepath.Join(dir, id)
+		d := filepath.Join(dir, "skills", id)
 		if err := os.MkdirAll(d, 0700); err != nil {
 			t.Fatal(err)
 		}

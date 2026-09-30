@@ -99,6 +99,8 @@ type UpstreamInfo struct {
 	CacheExists     bool           `json:"cacheExists"`
 	Scanned         bool           `json:"scanned"`
 	ScanError       string         `json:"scanError,omitempty"`
+	ScanRoots       []string       `json:"scanRoots,omitempty"`
+	ScanExclude     []string       `json:"scanExclude,omitempty"`
 }
 
 // SkillMetadata holds parsed information from SKILL.md.
@@ -214,12 +216,22 @@ type ProfileConfig struct {
 
 // UpstreamConfig represents an upstream source recorded in user-level configuration.
 type UpstreamConfig struct {
-	URL       string     `json:"url"`
-	Type      SourceType `json:"type,omitempty"`
-	Ref       string     `json:"ref,omitempty"`
-	Name      string     `json:"name,omitempty"`
-	CreatedAt string     `json:"createdAt,omitempty"`
-	UpdatedAt string     `json:"updatedAt,omitempty"`
+	URL       string      `json:"url"`
+	Type      SourceType  `json:"type,omitempty"`
+	Ref       string      `json:"ref,omitempty"`
+	Name      string      `json:"name,omitempty"`
+	Scan      *ScanConfig `json:"scan,omitempty"`
+	CreatedAt string      `json:"createdAt,omitempty"`
+	UpdatedAt string      `json:"updatedAt,omitempty"`
+}
+
+// EffectiveScan returns the canonical scan scope for this upstream, applying the default
+// when the source does not configure one or configures an invalid scope.
+func (u UpstreamConfig) EffectiveScan() ScanConfig {
+	if u.Scan == nil {
+		return DefaultScanConfig()
+	}
+	return u.Scan.Normalized()
 }
 
 // EditorConfig stores an executable and arguments without shell parsing.

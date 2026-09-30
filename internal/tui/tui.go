@@ -1753,21 +1753,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case viewModalAddUpstream:
-		switch m.addUpstreamModal.Active {
-		case 0:
-			m.addUpstreamModal.URLInput, cmd = m.addUpstreamModal.URLInput.Update(msg)
-		case 1:
-			m.addUpstreamModal.RefInput, cmd = m.addUpstreamModal.RefInput.Update(msg)
-		case 2:
-			m.addUpstreamModal.NameInput, cmd = m.addUpstreamModal.NameInput.Update(msg)
-		}
+		cmd = m.updateAddUpstreamInputs(msg)
 	case viewModalEditUpstream:
-		switch m.editUpstreamModal.Active {
-		case 0:
-			m.editUpstreamModal.RefInput, cmd = m.editUpstreamModal.RefInput.Update(msg)
-		case 1:
-			m.editUpstreamModal.NameInput, cmd = m.editUpstreamModal.NameInput.Update(msg)
-		}
+		cmd = m.updateEditUpstreamInputs(msg)
 	case viewModalNew:
 		m.newInput, cmd = m.newInput.Update(msg)
 	case viewModalAddTarget:
@@ -2497,7 +2485,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if len(displayed) > 0 && m.upstreamCursor < len(displayed) {
 					u := displayed[m.upstreamCursor]
 					m.view = viewModalEditUpstream
-					m.editUpstreamModal = newEditUpstreamModal(u.URL, u.Ref, u.Name)
+					m.editUpstreamModal = newEditUpstreamModal(u.URL, u.Ref, u.Name, model.ScanConfig{Roots: u.ScanRoots, Exclude: u.ScanExclude})
 					return m, nil
 				}
 			} else if m.activeTab == tabChannels {
@@ -4919,6 +4907,60 @@ func (m *Model) handleModalConfirmKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// upstreamModalNavKey reports whether the key is reserved for upstream modal navigation
+// and must not reach the focused text control.
+func upstreamModalNavKey(msg tea.Msg) bool {
+	key, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return false
+	}
+	switch key.String() {
+	case "tab", "shift+tab", "esc", "ctrl+s":
+		return true
+	}
+	return false
+}
+
+func (m *Model) updateAddUpstreamInputs(msg tea.Msg) tea.Cmd {
+	am := &m.addUpstreamModal
+	if am.Active == 0 || upstreamModalNavKey(msg) {
+		return nil
+	}
+	var cmd tea.Cmd
+	switch {
+	case am.Tab == 0 && am.Active == 1:
+		am.URLInput, cmd = am.URLInput.Update(msg)
+	case am.Tab == 0 && am.Active == 2:
+		am.RefInput, cmd = am.RefInput.Update(msg)
+	case am.Tab == 0 && am.Active == 3:
+		am.NameInput, cmd = am.NameInput.Update(msg)
+	case am.Tab == 1 && am.Active == 2:
+		am.Scan.RootsInput, cmd = am.Scan.RootsInput.Update(msg)
+	case am.Tab == 1 && am.Active == 3:
+		am.Scan.ExcludeInput, cmd = am.Scan.ExcludeInput.Update(msg)
+	}
+	return cmd
+}
+
+func (m *Model) updateEditUpstreamInputs(msg tea.Msg) tea.Cmd {
+	em := &m.editUpstreamModal
+	if em.Active == 0 || upstreamModalNavKey(msg) {
+		return nil
+	}
+	var cmd tea.Cmd
+	switch {
+	case em.Tab == 0 && em.Active == 1:
+		em.RefInput, cmd = em.RefInput.Update(msg)
+	case em.Tab == 0 && em.Active == 2:
+		em.NameInput, cmd = em.NameInput.Update(msg)
+	case em.Tab == 1 && em.Active == 2:
+		em.Scan.RootsInput, cmd = em.Scan.RootsInput.Update(msg)
+	case em.Tab == 1 && em.Active == 3:
+		em.Scan.ExcludeInput, cmd = em.Scan.ExcludeInput.Update(msg)
+	}
+	return cmd
+}
+
 func (m *Model) handleModalAddUpstreamKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
@@ -4927,69 +4969,102 @@ func (m *Model) handleModalAddUpstreamKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 		m.addUpstreamModal = newAddUpstreamModal()
 		return m, nil
 
-	case "tab":
-		m.addUpstreamModal.Active = (m.addUpstreamModal.Active + 1) % 3
+	case "tab", "shift+tab":
+		m.addUpstreamModal.cycleFocus(msg.String() == "shift+tab")
 		m.updateAddUpstreamFocus()
 		return m, nil
 
-	case "shift+tab":
-		m.addUpstreamModal.Active = (m.addUpstreamModal.Active + 2) % 3
-		m.updateAddUpstreamFocus()
-		return m, nil
-
-	case "enter":
-		url := strings.TrimSpace(m.addUpstreamModal.URLInput.Value())
-		if url == "" {
+	case "left", "right":
+		if m.addUpstreamModal.Active == 0 {
+			m.addUpstreamModal.Tab = 1 - m.addUpstreamModal.Tab
+			m.addUpstreamModal.Active = 1
+			m.updateAddUpstreamFocus()
 			return m, nil
 		}
-		ref := strings.TrimSpace(m.addUpstreamModal.RefInput.Value())
-		name := strings.TrimSpace(m.addUpstreamModal.NameInput.Value())
-
-		ctx, cancel := context.WithCancel(m.ctx)
-		m.cancelOp = cancel
-		m.loading = true
-		m.notice = i18n.T("notice.adding_upstream", url)
-		m.upstreamOperation++
-		id := m.upstreamOperation
-		svc := m.service
-		return m, func() tea.Msg {
-			if ctx.Err() != nil {
-				return nil
+		if m.addUpstreamModal.Tab == 1 && m.addUpstreamModal.Active == 1 {
+			delta := 1
+			if msg.String() == "left" {
+				delta = -1
 			}
-			err := svc.UpstreamAdd(ctx, url, ref, name)
-			result := upstreamAddedMsg{id: id, url: url, ref: ref, name: name, sourceType: model.SourceTypeGit, err: err}
-			if err == nil {
-				expanded, expandErr := fsx.ExpandUser(url)
-				cfg, configErr := svc.Config()
-				if configErr == nil {
-					for _, u := range cfg.Upstreams {
-						if u.URL == url || (expandErr == nil && u.URL == expanded) {
-							result.url, result.ref, result.name, result.sourceType = u.URL, u.Ref, u.Name, u.Type
-							break
-						}
-					}
-				}
-			}
-			return result
+			m.addUpstreamModal.Scan.cycleMode(delta)
+			m.updateAddUpstreamFocus()
+			return m, nil
 		}
+		// Otherwise the focused text control handles the arrow (cursor movement).
+
+	case "enter", "ctrl+s":
+		if msg.String() == "enter" && m.addUpstreamModal.focusIsMultiline() {
+			return m, nil
+		}
+		return m.submitAddUpstream()
 	}
 	return m, nil
 }
 
+func (m *Model) submitAddUpstream() (tea.Model, tea.Cmd) {
+	url := strings.TrimSpace(m.addUpstreamModal.URLInput.Value())
+	if url == "" {
+		return m, nil
+	}
+	scan, scanErrMsg := m.addUpstreamModal.Scan.config()
+	if scanErrMsg != "" {
+		m.err = fmt.Errorf("%s", scanErrMsg)
+		return m, nil
+	}
+	m.err = nil
+	ref := strings.TrimSpace(m.addUpstreamModal.RefInput.Value())
+	name := strings.TrimSpace(m.addUpstreamModal.NameInput.Value())
+
+	ctx, cancel := context.WithCancel(m.ctx)
+	m.cancelOp = cancel
+	m.loading = true
+	m.notice = i18n.T("notice.adding_upstream", url)
+	m.upstreamOperation++
+	id := m.upstreamOperation
+	svc := m.service
+	return m, func() tea.Msg {
+		if ctx.Err() != nil {
+			return nil
+		}
+		err := svc.UpstreamAdd(ctx, url, ref, name, scan)
+		result := upstreamAddedMsg{id: id, url: url, ref: ref, name: name, sourceType: model.SourceTypeGit, err: err}
+		if err == nil {
+			expanded, expandErr := fsx.ExpandUser(url)
+			cfg, configErr := svc.Config()
+			if configErr == nil {
+				for _, u := range cfg.Upstreams {
+					if u.URL == url || (expandErr == nil && u.URL == expanded) {
+						result.url, result.ref, result.name, result.sourceType = u.URL, u.Ref, u.Name, u.Type
+						break
+					}
+				}
+			}
+		}
+		return result
+	}
+}
+
 func (m *Model) updateAddUpstreamFocus() {
-	switch m.addUpstreamModal.Active {
-	case 0:
-		m.addUpstreamModal.URLInput.Focus()
-		m.addUpstreamModal.RefInput.Blur()
-		m.addUpstreamModal.NameInput.Blur()
-	case 1:
-		m.addUpstreamModal.URLInput.Blur()
-		m.addUpstreamModal.RefInput.Focus()
-		m.addUpstreamModal.NameInput.Blur()
-	case 2:
-		m.addUpstreamModal.URLInput.Blur()
-		m.addUpstreamModal.RefInput.Blur()
-		m.addUpstreamModal.NameInput.Focus()
+	am := &m.addUpstreamModal
+	am.URLInput.Blur()
+	am.RefInput.Blur()
+	am.NameInput.Blur()
+	am.Scan.RootsInput.Blur()
+	am.Scan.ExcludeInput.Blur()
+	if am.Active == 0 {
+		return
+	}
+	switch {
+	case am.Tab == 0 && am.Active == 1:
+		am.URLInput.Focus()
+	case am.Tab == 0 && am.Active == 2:
+		am.RefInput.Focus()
+	case am.Tab == 0 && am.Active == 3:
+		am.NameInput.Focus()
+	case am.Tab == 1 && am.Active == 2:
+		am.Scan.RootsInput.Focus()
+	case am.Tab == 1 && am.Active == 3:
+		am.Scan.ExcludeInput.Focus()
 	}
 }
 
@@ -5001,40 +5076,85 @@ func (m *Model) handleModalEditUpstreamKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 		return m, nil
 
 	case "tab", "shift+tab":
-		m.editUpstreamModal.Active = (m.editUpstreamModal.Active + 1) % 2
-		if m.editUpstreamModal.Active == 0 {
-			m.editUpstreamModal.RefInput.Focus()
-			m.editUpstreamModal.NameInput.Blur()
-		} else {
-			m.editUpstreamModal.RefInput.Blur()
-			m.editUpstreamModal.NameInput.Focus()
-		}
+		m.editUpstreamModal.cycleFocus(msg.String() == "shift+tab")
+		m.updateEditUpstreamFocus()
 		return m, nil
 
-	case "enter":
-		ref := strings.TrimSpace(m.editUpstreamModal.RefInput.Value())
-		name := strings.TrimSpace(m.editUpstreamModal.NameInput.Value())
-		url := m.editUpstreamModal.URL
+	case "left", "right":
+		if m.editUpstreamModal.Active == 0 {
+			m.editUpstreamModal.Tab = 1 - m.editUpstreamModal.Tab
+			m.editUpstreamModal.Active = 1
+			m.updateEditUpstreamFocus()
+			return m, nil
+		}
+		if m.editUpstreamModal.Tab == 1 && m.editUpstreamModal.Active == 1 {
+			delta := 1
+			if msg.String() == "left" {
+				delta = -1
+			}
+			m.editUpstreamModal.Scan.cycleMode(delta)
+			m.updateEditUpstreamFocus()
+			return m, nil
+		}
 
-		ctx, cancel := context.WithCancel(m.ctx)
-		m.cancelOp = cancel
-		m.loading = true
-		m.notice = i18n.T("notice.editing_upstream", url)
-		return m, func() tea.Msg {
+	case "enter", "ctrl+s":
+		if msg.String() == "enter" && m.editUpstreamModal.focusIsMultiline() {
+			return m, nil
+		}
+		return m.submitEditUpstream()
+	}
+	return m, nil
+}
+
+func (m *Model) updateEditUpstreamFocus() {
+	em := &m.editUpstreamModal
+	em.RefInput.Blur()
+	em.NameInput.Blur()
+	em.Scan.RootsInput.Blur()
+	em.Scan.ExcludeInput.Blur()
+	if em.Active == 0 {
+		return
+	}
+	switch {
+	case em.Tab == 0 && em.Active == 1:
+		em.RefInput.Focus()
+	case em.Tab == 0 && em.Active == 2:
+		em.NameInput.Focus()
+	case em.Tab == 1 && em.Active == 2:
+		em.Scan.RootsInput.Focus()
+	case em.Tab == 1 && em.Active == 3:
+		em.Scan.ExcludeInput.Focus()
+	}
+}
+
+func (m *Model) submitEditUpstream() (tea.Model, tea.Cmd) {
+	scan, scanErrMsg := m.editUpstreamModal.Scan.config()
+	if scanErrMsg != "" {
+		m.err = fmt.Errorf("%s", scanErrMsg)
+		return m, nil
+	}
+	m.err = nil
+	ref := strings.TrimSpace(m.editUpstreamModal.RefInput.Value())
+	name := strings.TrimSpace(m.editUpstreamModal.NameInput.Value())
+	url := m.editUpstreamModal.URL
+
+	ctx, cancel := context.WithCancel(m.ctx)
+	m.cancelOp = cancel
+	m.loading = true
+	m.notice = i18n.T("notice.editing_upstream", url)
+	return m, func() tea.Msg {
+		if ctx.Err() != nil {
+			return nil
+		}
+		err := m.service.UpstreamEdit(ctx, url, ref, name, scan)
+		if err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
-			err := m.service.UpstreamEdit(ctx, url, ref, name)
-			if err != nil {
-				if ctx.Err() != nil {
-					return nil
-				}
-				return errMsg{err: err}
-			}
-			return asyncNoticeMsg(fmt.Sprintf(i18n.T("notice.upstream_edited"), url))
+			return errMsg{err: err}
 		}
+		return asyncNoticeMsg(fmt.Sprintf(i18n.T("notice.upstream_edited"), url))
 	}
-	return m, nil
 }
 
 func (m *Model) handleModalConfirmUpstreamRemoveKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -6789,7 +6909,7 @@ func (m *Model) renderUpstreamsList() string {
 	b.WriteString(tableHeaderStyle.Render(header) + "\n")
 	b.WriteString(tableSeparatorStyle.Render(strings.Repeat("─", totalWidth)) + "\n")
 
-	maxVisible := m.listMax(2, len(displayed))
+	maxVisible := m.listMax(4, len(displayed))
 
 	if m.upstreamCursor < m.upstreamScrollOffset {
 		m.upstreamScrollOffset = m.upstreamCursor
@@ -6878,6 +6998,19 @@ func (m *Model) renderUpstreamsList() string {
 
 	if end < len(displayed) {
 		b.WriteString(lipgloss.NewStyle().Faint(true).Render(fmt.Sprintf(i18n.T("more.skills.below"), len(displayed)-end)) + "\n")
+	}
+
+	if len(displayed) > 0 {
+		idx := m.upstreamCursor
+		if idx < 0 || idx >= len(displayed) {
+			idx = 0
+		}
+		sel := displayed[idx]
+		summary := fmt.Sprintf(i18n.T("upstream.scan.summary"), i18n.RenderScanScopeWithExclude(sel.ScanRoots, sel.ScanExclude))
+		if m.width > 4 {
+			summary = truncate.StringWithTail(summary, uint(m.width-4), "…")
+		}
+		b.WriteString("\n" + lipgloss.NewStyle().Faint(true).Render("  "+summary))
 	}
 
 	return b.String()

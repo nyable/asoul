@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"asoul/internal/model"
@@ -57,6 +58,16 @@ func setupUpstreamGitRepo(t *testing.T, parentDir string) string {
 		t.Fatal(err)
 	}
 
+	// Placeholder template outside skills/ whose name does not match its directory.
+	templateDir := filepath.Join(repoDir, "template")
+	if err := os.MkdirAll(templateDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	templateContent := "---\nname: template-skill\ndescription: Replace with a real description\n---\n# Template\n"
+	if err := os.WriteFile(filepath.Join(templateDir, "SKILL.md"), []byte(templateContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
 	runGitCmd(t, repoDir, "add", ".")
 	runGitCmd(t, repoDir, "commit", "-m", "Initial commit with skills")
 
@@ -72,7 +83,7 @@ func TestConfiguredUpstreamCheckScansWithoutImports(t *testing.T) {
 	}
 	repo := setupUpstreamGitRepo(t, tmp)
 	url := "file://" + repo
-	if err := svc.UpstreamAdd(ctx, url, "", "fixture"); err != nil {
+	if err := svc.UpstreamAdd(ctx, url, "", "fixture", model.ScanConfig{}); err != nil {
 		t.Fatal(err)
 	}
 	before, err := svc.UpstreamList(ctx)
@@ -98,6 +109,74 @@ func TestConfiguredUpstreamCheckScansWithoutImports(t *testing.T) {
 	}
 	if failed[0].Error == "" || failed[0].Status != model.UpstreamUnreachable {
 		t.Fatalf("fetch failure swallowed %+v", failed)
+	}
+}
+
+// TestUpstreamScanScope verifies that the configured scan scope controls which files
+// are validated, so a placeholder template outside skills/ no longer fails the scan.
+func TestUpstreamScanScope(t *testing.T) {
+	svc, tmp, cleanup := setupTestService(t)
+	defer cleanup()
+	ctx := context.Background()
+	if _, err := svc.InitWorkspace(ctx, filepath.Join(tmp, "ws")); err != nil {
+		t.Fatal(err)
+	}
+	repo := setupUpstreamGitRepo(t, tmp)
+	url := "file://" + repo
+
+	// Default scope: skills/ only, template/ ignored.
+	if err := svc.UpstreamAdd(ctx, url, "", "fixture", model.ScanConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	list, err := svc.UpstreamList(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1 upstream, got %d", len(list))
+	}
+	if len(list[0].ScanRoots) != 1 || list[0].ScanRoots[0] != model.ScanRootDefault {
+		t.Fatalf("expected default scan roots, got %+v", list[0].ScanRoots)
+	}
+
+	checked, err := svc.UpstreamCheck(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checked[0].ScanError != "" {
+		t.Fatalf("default scope must not report the template: %q", checked[0].ScanError)
+	}
+	if len(checked[0].AvailableSkills) != 2 {
+		t.Fatalf("expected 2 available skills, got %v", checked[0].AvailableSkills)
+	}
+
+	// Whole-source scope: the template is parsed and its name mismatch is reported.
+	if err := svc.UpstreamEdit(ctx, url, "", "fixture", model.ScanConfig{Roots: []string{model.ScanRootWholeSource}}); err != nil {
+		t.Fatal(err)
+	}
+	checked, err = svc.UpstreamCheck(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(checked[0].ScanError, "template/SKILL.md") {
+		t.Fatalf("whole-source scope should report the template, got %q", checked[0].ScanError)
+	}
+
+	// Custom scope with an exclusion returns to a clean scan.
+	if err := svc.UpstreamEdit(ctx, url, "", "fixture", model.ScanConfig{Roots: []string{"skills", "template"}, Exclude: []string{"template"}}); err != nil {
+		t.Fatal(err)
+	}
+	checked, err = svc.UpstreamCheck(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checked[0].ScanError != "" {
+		t.Fatalf("excluded template must not be reported: %q", checked[0].ScanError)
+	}
+
+	// An invalid scope is rejected before it can be persisted.
+	if err := svc.UpstreamEdit(ctx, url, "", "fixture", model.ScanConfig{Roots: []string{"../escape"}}); err == nil {
+		t.Fatal("expected invalid scan root to be rejected")
 	}
 }
 

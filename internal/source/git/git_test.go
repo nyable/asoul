@@ -49,7 +49,7 @@ func TestDiscoverNestedSkillsAndReportInvalidFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	src := New(gitx.NewClient(), cm)
-	found, err := src.DiscoverSkills(context.Background(), repo, "")
+	found, err := src.DiscoverSkills(context.Background(), repo, "", model.DefaultScanConfig())
 	if len(found) != 3 || err == nil || !strings.Contains(err.Error(), "skills/broken/SKILL.md") {
 		t.Fatalf("%+v %v", found, err)
 	}
@@ -60,7 +60,7 @@ func TestDiscoverNestedSkillsAndReportInvalidFiles(t *testing.T) {
 	}
 	// A cache-only refresh must not resolve a new remote branch by fetching.
 	run("branch", "new-remote-only")
-	if _, err := src.DiscoverSkillsCached(context.Background(), repo, "new-remote-only"); err == nil {
+	if _, err := src.DiscoverSkillsCached(context.Background(), repo, "new-remote-only", model.DefaultScanConfig()); err == nil {
 		t.Fatal("cache-only discovery fetched a missing ref")
 	}
 }
@@ -151,5 +151,73 @@ func TestGitSource_ResolveBatch(t *testing.T) {
 
 	if !foundX || !foundY {
 		t.Fatalf("expected to find both skill-x and skill-y, foundX=%v, foundY=%v", foundX, foundY)
+	}
+}
+
+// TestDiscoverSkillsRespectsScanScope verifies that only directories inside the configured
+// scope are parsed, so placeholder templates outside skills/ no longer fail a scan.
+func TestDiscoverSkillsRespectsScanScope(t *testing.T) {
+	repo := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=test@example.com", "GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=test@example.com")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v %s", err, out)
+		}
+	}
+	write := func(rel, content string) {
+		t.Helper()
+		path := filepath.Join(repo, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	run("init")
+	write("skills/real/SKILL.md", "---\nname: real\ndescription: fixture\n---\n# real")
+	write("skills/demo/SKILL.md", "---\nname: demo\ndescription: fixture\n---\n# demo")
+	write("skills/broken/SKILL.md", "invalid frontmatter")
+	write("template/SKILL.md", "---\nname: template-skill\ndescription: placeholder\n---\n# template")
+	run("add", ".")
+	run("commit", "-m", "fixture")
+
+	cm, err := cache.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := New(gitx.NewClient(), cm)
+	ctx := context.Background()
+
+	// Default scope scans skills/ only: the placeholder template is ignored while the
+	// invalid skill inside skills/ still surfaces as a partial failure.
+	found, err := src.DiscoverSkills(ctx, repo, "", model.DefaultScanConfig())
+	if len(found) != 2 {
+		t.Fatalf("default scope should find 2 skills, got %+v", found)
+	}
+	if err == nil || !strings.Contains(err.Error(), "skills/broken/SKILL.md") {
+		t.Fatalf("default scope should report the broken skill, got %v", err)
+	}
+	if strings.Contains(err.Error(), "template/SKILL.md") {
+		t.Fatalf("template outside skills/ must not be reported: %v", err)
+	}
+
+	// Whole-source scope parses every SKILL.md, including the placeholder template.
+	whole, err := src.DiscoverSkillsCached(ctx, repo, "", model.ScanConfig{Roots: []string{"."}})
+	if len(whole) != 2 {
+		t.Fatalf("whole scope should still find 2 valid skills, got %+v", whole)
+	}
+	if err == nil || !strings.Contains(err.Error(), "template/SKILL.md") {
+		t.Fatalf("whole scope should report the template, got %v", err)
+	}
+
+	// Excluding a directory removes its failures without affecting other scopes.
+	excluded, err := src.DiscoverSkillsCached(ctx, repo, "", model.ScanConfig{Roots: []string{"skills"}, Exclude: []string{"skills/broken"}})
+	if len(excluded) != 2 || err != nil {
+		t.Fatalf("excluded scope should be clean, got %+v err=%v", excluded, err)
 	}
 }

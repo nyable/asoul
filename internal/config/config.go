@@ -569,6 +569,13 @@ func (m *Manager) AddUpstream(upstream model.UpstreamConfig) error {
 	if trimmedURL == "" {
 		return fmt.Errorf("upstream URL cannot be empty")
 	}
+	if upstream.Scan != nil {
+		normalized, err := model.NormalizeScanConfig(*upstream.Scan)
+		if err != nil {
+			return err
+		}
+		upstream.Scan = &normalized
+	}
 	nowStr := time.Now().Format("2006-01-02 15:04:05")
 
 	return m.mutate(func(cfg *model.Config) error {

@@ -16,6 +16,7 @@ import (
 	"asoul/internal/model"
 	"asoul/internal/source/git"
 
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
@@ -2210,12 +2211,198 @@ func RenderBatchRemoveModal(state *BatchRemoveModalState, box lipgloss.Style, he
 	return box.Render(b.String())
 }
 
+// Upstream scan mode values used by the add/edit modal tab.
+const (
+	upstreamScanModeDefault = iota
+	upstreamScanModeCustom
+	upstreamScanModeWhole
+)
+
+// upstreamScanForm holds the skill scan scope fields shared by the add and edit upstream modals.
+type upstreamScanForm struct {
+	RootsInput   textarea.Model
+	ExcludeInput textarea.Model
+	Mode         int
+}
+
+func upstreamScanModes() []int {
+	return []int{upstreamScanModeDefault, upstreamScanModeCustom, upstreamScanModeWhole}
+}
+
+func newUpstreamScanForm(scan model.ScanConfig) upstreamScanForm {
+	norm := scan.Normalized()
+	form := upstreamScanForm{Mode: upstreamScanModeDefault}
+	switch norm.Mode() {
+	case model.ScanModeWhole:
+		form.Mode = upstreamScanModeWhole
+	case model.ScanModeCustom:
+		form.Mode = upstreamScanModeCustom
+	}
+
+	roots := norm.Roots
+	if form.Mode == upstreamScanModeWhole {
+		roots = nil
+	}
+	form.RootsInput = newScanTextarea(strings.Join(roots, "\n"), i18n.T("modal.upstream.scan.roots_placeholder"))
+	form.ExcludeInput = newScanTextarea(strings.Join(norm.Exclude, "\n"), i18n.T("modal.upstream.scan.exclude_placeholder"))
+	return form
+}
+
+func newScanTextarea(value, placeholder string) textarea.Model {
+	ta := textarea.New()
+	ta.CharLimit = 0
+	ta.ShowLineNumbers = false
+	ta.Placeholder = placeholder
+	ta.SetWidth(56)
+	ta.SetHeight(3)
+	ta.SetValue(value)
+	ta.Blur()
+	return ta
+}
+
+func scanModeLabel(mode int) string {
+	switch mode {
+	case upstreamScanModeDefault:
+		return i18n.T("modal.upstream.scan.mode_default")
+	case upstreamScanModeWhole:
+		return i18n.T("modal.upstream.scan.mode_whole")
+	default:
+		return i18n.T("modal.upstream.scan.mode_custom")
+	}
+}
+
+func (f *upstreamScanForm) cycleMode(delta int) {
+	modes := upstreamScanModes()
+	idx := 0
+	for i, m := range modes {
+		if m == f.Mode {
+			idx = i
+			break
+		}
+	}
+	idx = (idx + delta + len(modes)) % len(modes)
+	f.Mode = modes[idx]
+}
+
+// config validates the form into a scan scope. It returns a localized message on failure.
+func (f upstreamScanForm) config() (model.ScanConfig, string) {
+	var roots []string
+	switch f.Mode {
+	case upstreamScanModeDefault:
+		roots = nil
+	case upstreamScanModeWhole:
+		roots = []string{model.ScanRootWholeSource}
+	default:
+		for _, line := range splitScanLines(f.RootsInput.Value()) {
+			clean, ok := model.NormalizeScanPath(line)
+			if !ok {
+				return model.ScanConfig{}, i18n.T("error.upstream_scan_path_invalid", line)
+			}
+			roots = append(roots, clean)
+		}
+		if len(roots) == 0 {
+			return model.ScanConfig{}, i18n.T("error.upstream_scan_roots_empty")
+		}
+	}
+
+	var exclude []string
+	for _, line := range splitScanLines(f.ExcludeInput.Value()) {
+		clean, ok := model.NormalizeScanPath(line)
+		if !ok {
+			return model.ScanConfig{}, i18n.T("error.upstream_scan_path_invalid", line)
+		}
+		if clean == model.ScanRootWholeSource {
+			return model.ScanConfig{}, i18n.T("error.upstream_scan_exclude_whole")
+		}
+		exclude = append(exclude, clean)
+	}
+	return model.ScanConfig{Roots: roots, Exclude: exclude}, ""
+}
+
+func splitScanLines(value string) []string {
+	var out []string
+	for _, line := range strings.Split(value, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+func upstreamFieldLabel(text string, focused bool) string {
+	if focused {
+		return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#A29BFE")).Render(text)
+	}
+	return lipgloss.NewStyle().Bold(true).Render(text)
+}
+
+func renderUpstreamTabBar(tab int, focused bool) string {
+	labels := []string{i18n.T("modal.upstream.tab.basic"), i18n.T("modal.upstream.tab.scan")}
+	rendered := make([]string, 0, len(labels))
+	for i, l := range labels {
+		var style lipgloss.Style
+		switch {
+		case i == tab && focused:
+			style = subTabFocusedStyle
+		case i == tab:
+			style = subTabSelectedStyle
+		case focused:
+			style = ancestorTabStyle
+		default:
+			style = subTabInactiveStyle
+		}
+		rendered = append(rendered, style.Render(l))
+	}
+	return strings.Join(rendered, " ")
+}
+
+// renderUpstreamScanForm renders the scan tab body. active is the focused field group
+// (1 = mode, 2 = roots, 3 = exclude); 0 means focus is on the tab bar.
+func renderUpstreamScanForm(f *upstreamScanForm, active int) string {
+	var b strings.Builder
+
+	b.WriteString(upstreamFieldLabel(i18n.T("modal.upstream.scan.mode_label"), active == 1) + "\n")
+	var pills []string
+	for _, m := range upstreamScanModes() {
+		var style lipgloss.Style
+		switch {
+		case m == f.Mode && active == 1:
+			style = subTabFocusedStyle
+		case m == f.Mode:
+			style = subTabSelectedStyle
+		default:
+			style = subTabInactiveStyle
+		}
+		pills = append(pills, style.Render(scanModeLabel(m)))
+	}
+	b.WriteString("  " + strings.Join(pills, " ") + "\n")
+	if f.Mode == upstreamScanModeWhole {
+		b.WriteString(lipgloss.NewStyle().Faint(true).Render("  "+i18n.T("modal.upstream.scan.whole_warning")) + "\n")
+	}
+	b.WriteString("\n")
+
+	b.WriteString(upstreamFieldLabel(i18n.T("modal.upstream.scan.roots_label"), active == 2) + "\n")
+	if f.Mode == upstreamScanModeCustom {
+		b.WriteString(f.RootsInput.View() + "\n\n")
+	} else {
+		b.WriteString(lipgloss.NewStyle().Faint(true).Render("  "+scanModeLabel(f.Mode)) + "\n\n")
+	}
+
+	b.WriteString(upstreamFieldLabel(i18n.T("modal.upstream.scan.exclude_label"), active == 3) + "\n")
+	b.WriteString(f.ExcludeInput.View() + "\n\n")
+
+	b.WriteString(lipgloss.NewStyle().Faint(true).Render(i18n.T("modal.upstream.scan.note")))
+	return b.String()
+}
+
 // AddUpstreamModalState holds state for adding an upstream source.
 type AddUpstreamModalState struct {
 	URLInput  textinput.Model
 	RefInput  textinput.Model
 	NameInput textinput.Model
-	Active    int // 0: URL, 1: Ref, 2: Name
+	Scan      upstreamScanForm
+	Tab       int // 0: basic information, 1: skill scan
+	Active    int // 0: tab bar; 1..3: field groups within the current tab
 }
 
 func newAddUpstreamModal() AddUpstreamModalState {
@@ -2239,23 +2426,60 @@ func newAddUpstreamModal() AddUpstreamModalState {
 		URLInput:  u,
 		RefInput:  r,
 		NameInput: n,
-		Active:    0,
+		Scan:      newUpstreamScanForm(model.DefaultScanConfig()),
+		Tab:       0,
+		Active:    1,
 	}
+}
+
+// validFieldGroups returns the focusable groups for the current tab in tab order.
+func (am AddUpstreamModalState) validFieldGroups() []int {
+	if am.Tab == 1 && am.Scan.Mode != upstreamScanModeCustom {
+		return []int{0, 1, 3}
+	}
+	return []int{0, 1, 2, 3}
+}
+
+// focusIsMultiline reports whether the focused field uses a multi-line textarea.
+func (am AddUpstreamModalState) focusIsMultiline() bool {
+	return am.Tab == 1 && (am.Active == 2 || am.Active == 3)
+}
+
+func (am *AddUpstreamModalState) cycleFocus(back bool) {
+	groups := am.validFieldGroups()
+	idx := 0
+	for i, g := range groups {
+		if g == am.Active {
+			idx = i
+			break
+		}
+	}
+	if back {
+		idx = (idx - 1 + len(groups)) % len(groups)
+	} else {
+		idx = (idx + 1) % len(groups)
+	}
+	am.Active = groups[idx]
 }
 
 // RenderAddUpstreamModal renders the modal for adding an upstream source.
 func RenderAddUpstreamModal(state *AddUpstreamModalState, box lipgloss.Style, err error) string {
 	var b strings.Builder
 	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#A29BFE")).Render(i18n.T("modal.upstream.add.title")) + "\n\n")
+	b.WriteString(renderUpstreamTabBar(state.Tab, state.Active == 0) + "\n\n")
 
-	b.WriteString(lipgloss.NewStyle().Bold(true).Render(i18n.T("modal.upstream.add.url_label")) + "\n")
-	b.WriteString(state.URLInput.View() + "\n\n")
+	if state.Tab == 0 {
+		b.WriteString(upstreamFieldLabel(i18n.T("modal.upstream.add.url_label"), state.Active == 1) + "\n")
+		b.WriteString(state.URLInput.View() + "\n\n")
 
-	b.WriteString(lipgloss.NewStyle().Bold(true).Render(i18n.T("modal.upstream.add.ref_label")) + "\n")
-	b.WriteString(state.RefInput.View() + "\n\n")
+		b.WriteString(upstreamFieldLabel(i18n.T("modal.upstream.add.ref_label"), state.Active == 2) + "\n")
+		b.WriteString(state.RefInput.View() + "\n\n")
 
-	b.WriteString(lipgloss.NewStyle().Bold(true).Render(i18n.T("modal.upstream.add.name_label")) + "\n")
-	b.WriteString(state.NameInput.View() + "\n\n")
+		b.WriteString(upstreamFieldLabel(i18n.T("modal.upstream.add.name_label"), state.Active == 3) + "\n")
+		b.WriteString(state.NameInput.View() + "\n\n")
+	} else {
+		b.WriteString(renderUpstreamScanForm(&state.Scan, state.Active) + "\n\n")
+	}
 
 	if err != nil {
 		b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#D63031")).Render("❌ "+err.Error()) + "\n\n")
@@ -2270,10 +2494,12 @@ type EditUpstreamModalState struct {
 	URL       string
 	RefInput  textinput.Model
 	NameInput textinput.Model
-	Active    int // 0: Ref, 1: Name
+	Scan      upstreamScanForm
+	Tab       int
+	Active    int
 }
 
-func newEditUpstreamModal(url, ref, name string) EditUpstreamModalState {
+func newEditUpstreamModal(url, ref, name string, scan model.ScanConfig) EditUpstreamModalState {
 	r := textinput.New()
 	r.SetValue(ref)
 	r.Placeholder = i18n.T("modal.upstream.ref_placeholder_edit")
@@ -2291,22 +2517,57 @@ func newEditUpstreamModal(url, ref, name string) EditUpstreamModalState {
 		URL:       url,
 		RefInput:  r,
 		NameInput: n,
-		Active:    0,
+		Scan:      newUpstreamScanForm(scan),
+		Tab:       0,
+		Active:    1,
 	}
+}
+
+func (em EditUpstreamModalState) validFieldGroups() []int {
+	if em.Tab == 1 && em.Scan.Mode != upstreamScanModeCustom {
+		return []int{0, 1, 3}
+	}
+	return []int{0, 1, 2, 3}
+}
+
+// focusIsMultiline reports whether the focused field uses a multi-line textarea.
+func (em EditUpstreamModalState) focusIsMultiline() bool {
+	return em.Tab == 1 && (em.Active == 2 || em.Active == 3)
+}
+
+func (em *EditUpstreamModalState) cycleFocus(back bool) {
+	groups := em.validFieldGroups()
+	idx := 0
+	for i, g := range groups {
+		if g == em.Active {
+			idx = i
+			break
+		}
+	}
+	if back {
+		idx = (idx - 1 + len(groups)) % len(groups)
+	} else {
+		idx = (idx + 1) % len(groups)
+	}
+	em.Active = groups[idx]
 }
 
 // RenderEditUpstreamModal renders the modal for editing an upstream source.
 func RenderEditUpstreamModal(state *EditUpstreamModalState, box lipgloss.Style, err error) string {
 	var b strings.Builder
 	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#A29BFE")).Render(i18n.T("modal.upstream.edit.title")) + "\n\n")
-
+	b.WriteString(renderUpstreamTabBar(state.Tab, state.Active == 0) + "\n\n")
 	b.WriteString(i18n.T("modal.upstream.edit.url_label") + lipgloss.NewStyle().Foreground(lipgloss.Color("#DFE6E9")).Bold(true).Render(state.URL) + "\n\n")
 
-	b.WriteString(lipgloss.NewStyle().Bold(true).Render(i18n.T("modal.upstream.edit.ref_label")) + "\n")
-	b.WriteString(state.RefInput.View() + "\n\n")
+	if state.Tab == 0 {
+		b.WriteString(upstreamFieldLabel(i18n.T("modal.upstream.edit.ref_label"), state.Active == 1) + "\n")
+		b.WriteString(state.RefInput.View() + "\n\n")
 
-	b.WriteString(lipgloss.NewStyle().Bold(true).Render(i18n.T("modal.upstream.edit.name_label")) + "\n")
-	b.WriteString(state.NameInput.View() + "\n\n")
+		b.WriteString(upstreamFieldLabel(i18n.T("modal.upstream.edit.name_label"), state.Active == 2) + "\n")
+		b.WriteString(state.NameInput.View() + "\n\n")
+	} else {
+		b.WriteString(renderUpstreamScanForm(&state.Scan, state.Active) + "\n\n")
+	}
 
 	if err != nil {
 		b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#D63031")).Render("❌ "+err.Error()) + "\n\n")
@@ -2565,7 +2826,15 @@ func buildUpstreamDetailBody(u model.UpstreamInfo, contentWidth int) string {
 	}
 	b.WriteString("\n")
 
-	// 3. Skills overview
+	// 3. Skill scan scope
+	b.WriteString(sectionStyle.Render(i18n.T("modal.upstream_detail.sec_scan")) + "\n")
+	renderDetailField(&b, i18n.T("modal.upstream_detail.scan_mode"), i18n.RenderScanScope(u.ScanRoots, u.ScanExclude), labelStyle, valueStyle, contentWidth)
+	if scanNorm := (model.ScanConfig{Roots: u.ScanRoots, Exclude: u.ScanExclude}).Normalized(); len(scanNorm.Exclude) > 0 {
+		renderDetailField(&b, i18n.T("modal.upstream_detail.scan_exclude"), strings.Join(scanNorm.Exclude, ", "), labelStyle, pathStyle, contentWidth)
+	}
+	b.WriteString("\n")
+
+	// 4. Skills overview
 	b.WriteString(sectionStyle.Render(i18n.T("modal.upstream_detail.sec_skills")) + "\n")
 	var introText string
 	if u.ScanError != "" {

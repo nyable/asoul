@@ -35,6 +35,59 @@ func TestEditorConfigSurvivesLockedMutations(t *testing.T) {
 	}
 }
 
+func TestUpstreamScanScopePersistence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.jsonc")
+	mgr, err := config.NewManager(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	scan := &model.ScanConfig{Roots: []string{"skills", "packages/skills"}, Exclude: []string{"skills/templates"}}
+	if err := mgr.AddUpstream(model.UpstreamConfig{URL: "https://example.com/repo", Type: model.SourceTypeGit, Scan: scan}); err != nil {
+		t.Fatal(err)
+	}
+	upstreams, err := mgr.ListUpstreams()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(upstreams) != 1 || upstreams[0].Scan == nil {
+		t.Fatalf("scan scope not persisted: %+v", upstreams)
+	}
+	if len(upstreams[0].Scan.Roots) != 2 || upstreams[0].Scan.Roots[1] != "packages/skills" {
+		t.Fatalf("scan roots not persisted: %+v", upstreams[0].Scan)
+	}
+	if len(upstreams[0].Scan.Exclude) != 1 || upstreams[0].Scan.Exclude[0] != "skills/templates" {
+		t.Fatalf("scan excludes not persisted: %+v", upstreams[0].Scan)
+	}
+
+	// An upstream without a scope keeps the built-in default without writing a scan block.
+	if err := mgr.AddUpstream(model.UpstreamConfig{URL: "https://example.com/plain", Type: model.SourceTypeGit}); err != nil {
+		t.Fatal(err)
+	}
+	upstreams, _ = mgr.ListUpstreams()
+	for _, u := range upstreams {
+		if u.URL == "https://example.com/plain" {
+			if u.Scan != nil {
+				t.Fatalf("default scope should not persist an explicit scan block: %+v", u.Scan)
+			}
+			if got := u.EffectiveScan(); len(got.Roots) != 1 || got.Roots[0] != model.ScanRootDefault {
+				t.Fatalf("effective default scope wrong: %+v", got)
+			}
+		}
+	}
+
+	// Invalid scopes are rejected and must not be written.
+	if err := mgr.AddUpstream(model.UpstreamConfig{URL: "https://example.com/bad", Scan: &model.ScanConfig{Roots: []string{"../escape"}}}); err == nil {
+		t.Fatal("expected invalid scan scope to be rejected")
+	}
+	upstreams, _ = mgr.ListUpstreams()
+	for _, u := range upstreams {
+		if u.URL == "https://example.com/bad" {
+			t.Fatalf("invalid upstream must not be persisted: %+v", u)
+		}
+	}
+}
+
 func TestWorkspaceDeduplicationAndNormalization(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfgFile := filepath.Join(tmpDir, "config.jsonc")

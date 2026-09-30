@@ -62,7 +62,7 @@ func runUpstreamList(cmd *cobra.Command, args []string) error {
 	}
 
 	w := tabwriter.NewWriter(out.stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "TYPE\tSTATUS\tSKILLS\tCOMMIT\tURL")
+	fmt.Fprintln(w, "TYPE\tSTATUS\tSKILLS\t"+i18n.T("table.header.upstream_scan")+"\tCOMMIT\tURL")
 	for _, u := range upstreams {
 		commit := u.Commit
 		if len(commit) > 7 {
@@ -79,7 +79,7 @@ func runUpstreamList(cmd *cobra.Command, args []string) error {
 				skillsStr = fmt.Sprintf("%d (%s...)", len(u.Skills), strings.Join(u.Skills[:3], ", "))
 			}
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", u.Type, u.Status, skillsStr, commit, u.URL)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", u.Type, u.Status, skillsStr, i18n.RenderScanScopeWithExclude(u.ScanRoots, u.ScanExclude), commit, u.URL)
 	}
 	return w.Flush()
 }
@@ -359,8 +359,10 @@ func newUpstreamPullCmd() *cobra.Command {
 
 func newUpstreamAddCmd() *cobra.Command {
 	var (
-		flagRef  string
-		flagName string
+		flagRef    string
+		flagName   string
+		flagRoots  []string
+		flagExclud []string
 	)
 	cmd := &cobra.Command{
 		Use:   "add <url-or-path>",
@@ -368,7 +370,12 @@ func newUpstreamAddCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			url := args[0]
-			if err := appService.UpstreamAdd(cmd.Context(), url, flagRef, flagName); err != nil {
+			scan := model.ScanConfig{Roots: flagRoots, Exclude: flagExclud}
+			normalized, err := model.NormalizeScanConfig(scan)
+			if err != nil {
+				return err
+			}
+			if err := appService.UpstreamAdd(cmd.Context(), url, flagRef, flagName, normalized); err != nil {
 				return err
 			}
 			if out.json {
@@ -377,6 +384,10 @@ func newUpstreamAddCmd() *cobra.Command {
 					"url":    url,
 					"ref":    flagRef,
 					"name":   flagName,
+					"scan": map[string]interface{}{
+						"roots":   normalized.Roots,
+						"exclude": normalized.Exclude,
+					},
 				})
 			}
 			out.Successf(i18n.T("cli.upstream.added"), url)
@@ -385,6 +396,8 @@ func newUpstreamAddCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&flagRef, "ref", "", "Git branch, tag or commit to track")
 	cmd.Flags().StringVar(&flagName, "name", "", "Optional alias / display name for the upstream source")
+	cmd.Flags().StringSliceVar(&flagRoots, "scan-root", nil, "Directory inside the source to scan for skills (default: skills); repeatable, use \".\" for the whole source")
+	cmd.Flags().StringSliceVar(&flagExclud, "exclude", nil, "Directory inside the source to exclude from scanning; repeatable")
 	return cmd
 }
 

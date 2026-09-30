@@ -619,9 +619,28 @@ func (s *Service) AddLocal(ctx context.Context, localPath string, replaceSource 
 	return s.installCandidate(ctx, cand, spec, replaceSource, false)
 }
 
-// DiscoverGit discovers all skills in a git repository.
+// DiscoverGit discovers all skills in a git repository using the registered scan scope.
 func (s *Service) DiscoverGit(ctx context.Context, url, ref string, onProgress ...progress.Func) ([]git.DiscoveredSkill, error) {
-	return s.gitSource.DiscoverSkills(ctx, url, ref, onProgress...)
+	return s.gitSource.DiscoverSkills(ctx, url, ref, s.scanConfigFor(url), onProgress...)
+}
+
+// scanConfigFor returns the configured scan scope for an upstream URL or local path,
+// falling back to the built-in default when the source is not registered.
+func (s *Service) scanConfigFor(url string) model.ScanConfig {
+	if s.configMgr == nil || strings.TrimSpace(url) == "" {
+		return model.DefaultScanConfig()
+	}
+	upstreams, err := s.configMgr.ListUpstreams()
+	if err != nil {
+		return model.DefaultScanConfig()
+	}
+	expanded, expandErr := fsx.ExpandUser(url)
+	for _, u := range upstreams {
+		if u.URL == url || (expandErr == nil && u.URL == expanded) {
+			return u.EffectiveScan()
+		}
+	}
+	return model.DefaultScanConfig()
 }
 
 // BatchAddResult contains results of a batch skill addition.
@@ -1228,6 +1247,17 @@ func (s *Service) buildUpstreamList(ctx context.Context, statuses []model.SkillS
 		statusMap[st.ID] = st
 	}
 
+	var configuredUpstreams []model.UpstreamConfig
+	if s.configMgr != nil {
+		configuredUpstreams, _ = s.configMgr.ListUpstreams()
+	}
+	scanByURL := make(map[string]model.ScanConfig, len(configuredUpstreams))
+	for _, u := range configuredUpstreams {
+		if u.URL != "" {
+			scanByURL[u.URL] = u.EffectiveScan()
+		}
+	}
+
 	type upstreamKey struct {
 		srcType model.SourceType
 		url     string
@@ -1303,42 +1333,38 @@ func (s *Service) buildUpstreamList(ctx context.Context, statuses []model.SkillS
 	}
 
 	// Also include configured upstreams from config.jsonc
-	if s.configMgr != nil {
-		if configured, err := s.configMgr.ListUpstreams(); err == nil {
-			for _, cfgUp := range configured {
-				if cfgUp.URL == "" {
-					continue
-				}
-				k := upstreamKey{
-					srcType: cfgUp.Type,
-					url:     cfgUp.URL,
-					ref:     cfgUp.Ref,
-				}
-				if info, exists := groups[k]; exists {
-					if cfgUp.Name != "" && info.Name == "" {
-						info.Name = cfgUp.Name
-					}
-					if cfgUp.CreatedAt != "" && info.CreatedAt == "" {
-						info.CreatedAt = cfgUp.CreatedAt
-					}
-					if cfgUp.UpdatedAt != "" && info.UpdatedAt == "" {
-						info.UpdatedAt = cfgUp.UpdatedAt
-					}
-				} else {
-					info := &model.UpstreamInfo{
-						URL:       cfgUp.URL,
-						Name:      cfgUp.Name,
-						Type:      cfgUp.Type,
-						Ref:       cfgUp.Ref,
-						Status:    model.UpstreamUpToDate,
-						Skills:    []string{},
-						CreatedAt: cfgUp.CreatedAt,
-						UpdatedAt: cfgUp.UpdatedAt,
-					}
-					groups[k] = info
-					keyOrder = append(keyOrder, k)
-				}
+	for _, cfgUp := range configuredUpstreams {
+		if cfgUp.URL == "" {
+			continue
+		}
+		k := upstreamKey{
+			srcType: cfgUp.Type,
+			url:     cfgUp.URL,
+			ref:     cfgUp.Ref,
+		}
+		if info, exists := groups[k]; exists {
+			if cfgUp.Name != "" && info.Name == "" {
+				info.Name = cfgUp.Name
 			}
+			if cfgUp.CreatedAt != "" && info.CreatedAt == "" {
+				info.CreatedAt = cfgUp.CreatedAt
+			}
+			if cfgUp.UpdatedAt != "" && info.UpdatedAt == "" {
+				info.UpdatedAt = cfgUp.UpdatedAt
+			}
+		} else {
+			info := &model.UpstreamInfo{
+				URL:       cfgUp.URL,
+				Name:      cfgUp.Name,
+				Type:      cfgUp.Type,
+				Ref:       cfgUp.Ref,
+				Status:    model.UpstreamUpToDate,
+				Skills:    []string{},
+				CreatedAt: cfgUp.CreatedAt,
+				UpdatedAt: cfgUp.UpdatedAt,
+			}
+			groups[k] = info
+			keyOrder = append(keyOrder, k)
 		}
 	}
 
@@ -1346,6 +1372,10 @@ func (s *Service) buildUpstreamList(ctx context.Context, statuses []model.SkillS
 	for _, k := range keyOrder {
 		info := groups[k]
 		sort.Strings(info.Skills)
+
+		scan := scanByURL[info.URL].Normalized()
+		info.ScanRoots = scan.Roots
+		info.ScanExclude = scan.Exclude
 
 		// Inspect local cache and discover available skills from cache without network
 		if info.Type == model.SourceTypeGit && s.cacheMgr != nil && s.gitSource != nil {
@@ -1357,7 +1387,7 @@ func (s *Service) buildUpstreamList(ctx context.Context, statuses []model.SkillS
 						info.Commit = commit
 					}
 				}
-				disc, scanErr := s.gitSource.DiscoverSkillsCached(ctx, info.URL, info.Ref)
+				disc, scanErr := s.gitSource.DiscoverSkillsCached(ctx, info.URL, info.Ref, scan)
 				info.Scanned = true
 				if scanErr != nil {
 					info.ScanError = scanErr.Error()
@@ -1427,7 +1457,9 @@ func (s *Service) UpstreamRefresh(ctx context.Context) ([]model.UpstreamInfo, er
 }
 
 // UpstreamAdd registers an upstream source in user configuration.
-func (s *Service) UpstreamAdd(ctx context.Context, rawURL, ref, name string) error {
+// The scan scope selects which directories inside the source are scanned for skills;
+// an empty scope means the built-in default (skills/).
+func (s *Service) UpstreamAdd(ctx context.Context, rawURL, ref, name string, scan model.ScanConfig) error {
 	if s.configMgr == nil {
 		return fmt.Errorf("config manager not initialized")
 	}
@@ -1449,11 +1481,16 @@ func (s *Service) UpstreamAdd(ctx context.Context, rawURL, ref, name string) err
 		}
 	}
 
+	storedScan, err := scan.Stored()
+	if err != nil {
+		return err
+	}
 	return s.configMgr.AddUpstream(model.UpstreamConfig{
 		URL:  rawURL,
 		Type: srcType,
 		Ref:  ref,
 		Name: name,
+		Scan: storedScan,
 	})
 }
 
@@ -1485,8 +1522,8 @@ func (s *Service) UpstreamRemove(ctx context.Context, targetURL string, removeSk
 	return nil
 }
 
-// UpstreamEdit updates configuration (ref/name) for an upstream source.
-func (s *Service) UpstreamEdit(ctx context.Context, targetURL, newRef, newName string) error {
+// UpstreamEdit updates configuration (ref/name/scan scope) for an upstream source.
+func (s *Service) UpstreamEdit(ctx context.Context, targetURL, newRef, newName string, scan model.ScanConfig) error {
 	if s.configMgr == nil {
 		return fmt.Errorf("config manager not initialized")
 	}
@@ -1499,10 +1536,15 @@ func (s *Service) UpstreamEdit(ctx context.Context, targetURL, newRef, newName s
 	if err != nil {
 		return err
 	}
+	storedScan, err := scan.Stored()
+	if err != nil {
+		return err
+	}
 	for _, u := range upstreams {
 		if strings.TrimSpace(u.URL) == targetURL {
 			u.Ref = newRef
 			u.Name = newName
+			u.Scan = storedScan
 			return s.configMgr.UpdateUpstream(u)
 		}
 	}
@@ -1517,6 +1559,7 @@ func (s *Service) UpstreamEdit(ctx context.Context, targetURL, newRef, newName s
 		Type: srcType,
 		Ref:  newRef,
 		Name: newName,
+		Scan: storedScan,
 	})
 }
 
@@ -1597,6 +1640,7 @@ func isGitURL(url string) bool {
 // UpstreamDiscover discovers all skills available in the upstream repository or directory.
 func (s *Service) UpstreamDiscover(ctx context.Context, targetURL, ref string, onProgress ...progress.Func) ([]git.DiscoveredSkill, error) {
 	isGit := isGitURL(targetURL)
+	scope := s.scanConfigFor(targetURL)
 
 	if !isGit {
 		expanded, err := fsx.ExpandUser(targetURL)
@@ -1616,12 +1660,18 @@ func (s *Service) UpstreamDiscover(ctx context.Context, targetURL, ref string, o
 				}
 				if filepath.Base(path) == "SKILL.md" {
 					subDir := filepath.Dir(path)
+					rel, relErr := filepath.Rel(expanded, subDir)
+					if relErr != nil {
+						rel = subDir
+					}
+					if !model.InScanScope(rel, scope.Roots, scope.Exclude) {
+						return nil
+					}
 					meta, err := skill.ValidateSkillDir(subDir, "")
 					if err != nil {
 						failures = append(failures, fmt.Errorf("%s: %w", path, err))
 					}
 					if err == nil && meta.Name != "" {
-						rel, relErr := filepath.Rel(expanded, subDir)
 						if relErr != nil {
 							rel = meta.Name
 						}
@@ -1641,7 +1691,7 @@ func (s *Service) UpstreamDiscover(ctx context.Context, targetURL, ref string, o
 		}
 	}
 
-	return s.DiscoverGit(ctx, targetURL, ref, onProgress...)
+	return s.gitSource.DiscoverSkills(ctx, targetURL, ref, scope, onProgress...)
 }
 
 // UpstreamPull pulls or updates skills from upstream into the managed workspace store.
